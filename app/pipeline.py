@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -25,6 +26,10 @@ FETCHERS = {"greenhouse": greenhouse.fetch, "lever": lever.fetch, "ashby": ashby
 
 class PipelineBusy(Exception):
     pass
+
+
+# Used by the GitHub Actions feed crawl: no resume, no personal data - just "engineering jobs I could take from India".
+GENERIC_PROFILE = {"locations": ["india", "remote"]}
 
 
 def load_companies(path: Path | None = None) -> dict:
@@ -139,6 +144,7 @@ async def crawl(
         async with sem:
             try:
                 known = store.known_urls(["wellfound", "yc"], tinyfish.PREVIEW_TAG)
+                known.update({u: True for u in store.rejected_urls()})      # recently rejected => don't re-fetch
                 jobs = await tinyfish.discover(client, cfg, known, lambda j: is_relevant(j, profile), info)
             except Exception as e:  # noqa: BLE001
                 msg = f"tinyfish: {type(e).__name__}: {e}"
@@ -150,6 +156,8 @@ async def crawl(
         seen = info.pop("seen_urls", [])
         kept = [j for j in jobs if is_relevant(j, profile)]
         res = store.upsert_jobs(kept)
+        kept_urls = {j.url for j in kept}
+        store.add_rejected([u for u in info.pop("processed", []) if u not in kept_urls])
         store.touch_urls(seen)                       # still listed => still open
         closed = store.close_unseen(["wellfound", "yc"], int(cfg.get("close_after_days", 21)))
         stats["sources"]["tinyfish"] = {**info, "kept": len(kept), "inserted": res["inserted"],
@@ -178,15 +186,21 @@ def run_pipeline(
     rebuild_profile: bool = False,
     client: Optional[httpx.AsyncClient] = None,
     on_progress: Optional[Callable[[str], None]] = None,
+    generic: bool = False,
 ) -> dict:
-    """Full daily run. Raises PipelineBusy if another run is active."""
+    """Full daily run. Raises PipelineBusy if another run is active.
+
+    generic=True is the "feed" mode used by GitHub Actions: no resume/profile is read or stored and jobs are not scored
+    (the consumer scores them with its own profile)."""
     if store.running_run():
         raise PipelineBusy("A crawl is already running")
     run_id = store.start_run()
     try:
-        profile = ensure_profile(store, resume, force=rebuild_profile)
+        profile = GENERIC_PROFILE if generic else ensure_profile(store, resume, force=rebuild_profile)
         stats = asyncio.run(crawl(store, load_companies(companies_path), profile, client, on_progress))
-        stats["rescored"] = rescore(store, profile)
+        stats["rescored"] = 0 if generic else rescore(store, profile)
+        if generic:
+            store.set_meta("feed_generated_at", datetime.now(timezone.utc).isoformat(timespec="seconds"))
         failed_all = stats["sources_attempted"] > 0 and not stats["sources"]
         store.finish_run(run_id, "failed" if failed_all else "ok", stats)
         return stats

@@ -370,3 +370,34 @@ def test_pipeline_skips_tinyfish_without_key(store, profile, monkeypatch):
 
     stats = run(go())
     assert any("TINYFISH_API_KEY not set" in e for e in stats["errors"]) and "tinyfish" not in stats["sources"]
+
+
+@respx.mock
+def test_rejected_pages_are_not_fetched_again(store, profile):
+    """Stale / US-only / wrong-place pages are remembered so the daily run doesn't pay to re-fetch them."""
+    stale, good = "https://wellfound.com/jobs/1-developer", "https://wellfound.com/jobs/2-developer"
+    _mock_search((stale, "Developer at A • Pune"), (good, "Developer at B • Pune"))
+    fetch = _mock_fetch({stale: WF_PAGE.replace("Posted: 2 weeks ago", "Posted: 3 years ago"), good: WF_PAGE})
+    companies = {"greenhouse": [], "lever": [], "ashby": [], "aggregators": {"tinyfish": {**CFG, "enabled": True}}}
+
+    async def go():
+        async with make_client() as c:
+            return await crawl(store, companies, profile, client=c)
+
+    first = run(go())
+    assert first["sources"]["tinyfish"]["fetched"] == 2 and first["sources"]["tinyfish"]["stale"] == 1
+    assert store.rejected_urls() == {stale}
+    calls_before = fetch.call_count
+    second = run(go())
+    assert fetch.call_count == calls_before and second["sources"]["tinyfish"]["fetched"] == 0      # nothing left to fetch
+
+
+def test_rejected_memory_expires(store):
+    store.add_rejected(["https://w/1"])
+    assert store.rejected_urls() == {"https://w/1"}
+    with store.conn() as c:
+        c.execute("UPDATE rejected SET at='2020-01-01T00:00:00+00:00'")
+    assert store.rejected_urls() == set()                      # old enough to be reconsidered (and purged)
+    store.add_rejected(["https://w/1"])
+    store.add_rejected(["https://w/1"])                        # idempotent
+    assert store.rejected_urls() == {"https://w/1"}

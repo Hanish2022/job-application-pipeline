@@ -1,0 +1,79 @@
+name: daily-job-feed
+
+# Crawls the job sources once a day on GitHub's servers and publishes the result to a PRIVATE repo.
+# Nothing personal is involved: no resume, no profile - just public postings for engineering roles in India/remote.
+# Your laptop later runs `sync-feed` (or cron does) to import the feed and score it with your own resume.
+#
+# One-time setup (secrets + private repo + deploy key) is described in README.md -> "Run the crawl on GitHub Actions".
+
+on:
+  schedule:
+    - cron: "30 1 * * *"      # 01:30 UTC = 07:00 IST. GitHub may start scheduled runs a few minutes late.
+  workflow_dispatch:           # "Run workflow" button in the Actions tab
+  # Deliberately NO pull_request / pull_request_target triggers: secrets must never reach code from forks.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: job-feed
+  cancel-in-progress: false
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      # Private repo that receives the feed. Override with a repository variable named FEED_REPO.
+      FEED_REPO: ${{ vars.FEED_REPO || 'Hanish2022/job-application-pipeline-data' }}
+      JOBS_DB_PATH: data/feed.db
+      JOBS_LOG_DIR: data/logs
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-runtime.txt
+
+      - name: Install runtime dependencies
+        run: pip install -r requirements-runtime.txt
+
+      - name: Configure access to the private feed repo
+        env:
+          FEED_DEPLOY_KEY: ${{ secrets.FEED_DEPLOY_KEY }}
+          TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+        run: |
+          if [ -z "$FEED_DEPLOY_KEY" ]; then
+            echo "::error::Secret FEED_DEPLOY_KEY is missing. See README -> 'Run the crawl on GitHub Actions'."
+            exit 1
+          fi
+          if [ -z "$TINYFISH_API_KEY" ]; then
+            echo "::warning::TINYFISH_API_KEY is not set - Wellfound/YC will be skipped; other sources still run."
+          fi
+          install -d -m 700 ~/.ssh
+          umask 077
+          printf '%s\n' "$FEED_DEPLOY_KEY" > ~/.ssh/feed_key
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/feed_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+          echo "FEED_REMOTE=git@github.com:${FEED_REPO}.git" >> "$GITHUB_ENV"
+
+      - name: Restore previous feed
+        run: bash scripts/restore_feed.sh data/feed.db
+
+      - name: Crawl (profile-less)
+        env:
+          TINYFISH_API_KEY: ${{ secrets.TINYFISH_API_KEY }}
+        run: python -m app.cli crawl --generic --quiet
+
+      - name: Publish feed
+        run: bash scripts/publish_feed.sh data/feed.db
+
+      - name: Remove deploy key
+        if: always()
+        run: rm -f ~/.ssh/feed_key

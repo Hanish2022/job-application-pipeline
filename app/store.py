@@ -54,6 +54,11 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rejected (
+    url TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT '',
+    at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at  TEXT NOT NULL,
@@ -126,10 +131,10 @@ class Store:
                     continue
                 fp = fingerprint(job)
                 loc = job.location or ""
-                found = sal.extract(
-                    job.salary, job.description,
-                    structured=sal.from_structured(job.salary_min, job.salary_max, job.salary_currency, job.salary_period, job.salary),
-                )
+                structured = sal.from_structured(job.salary_min, job.salary_max, job.salary_currency, job.salary_period, job.salary)
+                if job.salary_lpa_min is not None and job.salary_lpa_max is not None:
+                    structured = sal.Salary(job.salary_lpa_min, job.salary_lpa_max, job.salary_currency or "INR", job.salary)
+                found = sal.extract(job.salary, job.description, structured=structured)
                 lo, hi, cur = (found.min_lpa, found.max_lpa, found.currency) if found else (None, None, "")
                 salary_text = job.salary or (found.raw if found else "")
                 row = (
@@ -190,6 +195,43 @@ class Store:
         with self.conn() as c:
             rows = c.execute(f"SELECT url, tags FROM jobs WHERE source IN ({marks})", sources).fetchall()
         return {r["url"]: preview_tag not in json.loads(r["tags"] or "[]") for r in rows}
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.conn() as c:
+            c.execute("INSERT INTO kv(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+
+    def get_meta(self, key: str) -> Optional[str]:
+        with self.conn() as c:
+            row = c.execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def close_fingerprints(self, fingerprints: Iterable[str]) -> int:
+        fps = list(fingerprints)
+        n = 0
+        with self.conn() as c:
+            for i in range(0, len(fps), 500):
+                chunk = fps[i : i + 500]
+                n += c.execute(
+                    f"UPDATE jobs SET closed=1 WHERE closed=0 AND fingerprint IN ({','.join('?' * len(chunk))})", chunk
+                ).rowcount
+        return n
+
+    def rejected_urls(self, days: int = 14) -> set[str]:
+        """URLs we fetched and decided against recently (stale, US-only, wrong place…): don't pay to fetch them again."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+        with self.conn() as c:
+            c.execute("DELETE FROM rejected WHERE at < ?", (cutoff,))
+            return {r["url"] for r in c.execute("SELECT url FROM rejected")}
+
+    def add_rejected(self, urls: Iterable[str], reason: str = "filtered") -> int:
+        now = now_iso()
+        urls = list(urls)
+        with self.conn() as c:
+            c.executemany(
+                "INSERT INTO rejected(url, reason, at) VALUES(?,?,?) ON CONFLICT(url) DO UPDATE SET at=excluded.at",
+                [(u, reason, now) for u in urls],
+            )
+        return len(urls)
 
     def touch_urls(self, urls: Iterable[str]) -> int:
         """Mark jobs as still visible in a discovery source (refresh last_seen, re-open if closed)."""
@@ -380,6 +422,11 @@ class Store:
                 "UPDATE runs SET finished_at=?, status=?, stats=? WHERE id=?",
                 (now_iso(), status, json.dumps(stats), run_id),
             )
+
+    def last_ok_finished_at(self) -> Optional[str]:
+        with self.conn() as c:
+            row = c.execute("SELECT finished_at FROM runs WHERE status='ok' AND finished_at IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        return row["finished_at"] if row else None
 
     def recent_runs(self, n: int = 10) -> list[dict]:
         with self.conn() as c:

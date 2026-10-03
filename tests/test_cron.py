@@ -37,6 +37,9 @@ def test_print_does_not_modify_crontab(fake_crontab):
     table, env = fake_crontab
     r = sh([str(INSTALL), "--print", "--time", "06:45"], env)
     assert r.returncode == 0 and r.stdout.startswith("45 6 * * *") and "cron_crawl.sh" in r.stdout
+    lines = [l for l in r.stdout.splitlines() if "jobs-pipeline daily crawl" in l]
+    assert [l.split(" JOBS_RUN_AT")[0] for l in lines] == ["45 6 * * *", "0 * * * *", "@reboot sleep 120 &&"]   # daily, hourly catch-up, boot
+    assert all("JOBS_RUN_AT=06:45" in l for l in lines)
     assert not table.exists()
 
 
@@ -48,7 +51,7 @@ def test_install_is_idempotent_preserves_other_entries_and_remove_cleans(fake_cr
     lines = table.read_text().strip().splitlines()
     assert "0 1 * * * /usr/bin/other-job" in lines
     ours = [l for l in lines if "jobs-pipeline daily crawl" in l]
-    assert len(ours) == 1 and ours[0].startswith("15 10 * * *")
+    assert len(ours) == 3 and ours[0].startswith("15 10 * * *") and all("JOBS_RUN_AT=10:15" in l for l in ours)   # replaced, not duplicated
     assert sh([str(INSTALL), "--remove"], env).returncode == 0
     assert table.read_text().strip() == "0 1 * * * /usr/bin/other-job"
 
@@ -74,3 +77,50 @@ def test_cron_script_skips_when_locked(tmp_path):
     finally:
         holder.kill()
         holder.wait()
+
+
+# ---------------------------------------------------------- guarded crawl script, with a fake interpreter
+@pytest.fixture()
+def fake_py(tmp_path):
+    """A stand-in for the venv python: records calls, and `due` exits with $FAKE_DUE, `crawl` with $FAKE_CRAWL."""
+    calls = tmp_path / "calls.txt"
+    py = tmp_path / "fakepy"
+    py.write_text(f'''#!/usr/bin/env bash
+echo "$@" >> "{calls}"
+case "$3" in
+  due) echo "fake reason"; exit "${{FAKE_DUE:-0}}" ;;
+  refresh) exit "${{FAKE_CRAWL:-0}}" ;;
+esac
+''')
+    py.chmod(py.stat().st_mode | stat.S_IEXEC)
+    logs = tmp_path / "logs"
+
+    def run(due=0, crawl=0, run_at=None):
+        env = dict(os.environ, JOBS_PYTHON=str(py), JOBS_LOG_DIR=str(logs), FAKE_DUE=str(due), FAKE_CRAWL=str(crawl))
+        if run_at:
+            env["JOBS_RUN_AT"] = run_at
+        r = subprocess.run([str(CRON)], env=env, capture_output=True, text=True, timeout=30)
+        log = (logs / "crawl.log").read_text() if (logs / "crawl.log").exists() else ""
+        return r, log, calls.read_text() if calls.exists() else ""
+    return run
+
+
+def test_cron_script_is_silent_and_does_not_crawl_when_not_due(fake_py):
+    r, log, calls = fake_py(due=1)
+    assert r.returncode == 0 and log == "" and "crawl" not in calls and "due --at 08:30" in calls
+
+
+def test_cron_script_crawls_when_due_and_passes_the_slot(fake_py):
+    r, log, calls = fake_py(due=0, run_at="06:15")
+    assert r.returncode == 0 and "crawl start (fake reason)" in log and "crawl ok" in log
+    assert "due --at 06:15" in calls and "refresh --quiet" in calls
+
+
+def test_cron_script_reports_crawl_failure(fake_py):
+    r, log, _ = fake_py(due=0, crawl=3)
+    assert r.returncode == 3 and "crawl FAILED (exit 3)" in log
+
+
+def test_cron_script_reports_schedule_check_errors(fake_py):
+    r, log, calls = fake_py(due=2)
+    assert r.returncode == 2 and "ERROR checking schedule: fake reason" in log and "crawl" not in calls

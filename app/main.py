@@ -15,7 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import config
-from .pipeline import PipelineBusy, ensure_profile, rescore, run_pipeline
+from .feed import refresh
+from .pipeline import PipelineBusy, ensure_profile, rescore
 from .resume import ResumeError, profile_from_file
 from .store import VALID_STATUSES, Store
 
@@ -55,7 +56,7 @@ def _csv(value: Optional[str]) -> list[str]:
 def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store], dict]] = None) -> FastAPI:
     """`crawler` lets tests swap the network crawl for a fake."""
     store = store or Store()
-    crawler = crawler or (lambda s: run_pipeline(s))
+    crawler = crawler or (lambda s: refresh(s))
     app = FastAPI(title="Jobs Pipeline", version="1.0")
     state = {"thread": None, "lock": threading.Lock(), "error": None}
 

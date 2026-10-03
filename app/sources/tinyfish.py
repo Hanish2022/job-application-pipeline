@@ -311,6 +311,7 @@ async def discover(
             previews.extend(chunk)
             continue
         counters["fetched"] += len(ok)
+        info.setdefault("processed", []).extend(ok)         # pages we successfully read (kept or not)
         for j in chunk:
             d = ok.get(j.url)
             if d is None:                      # fetch failed (bot_blocked/timeout): keep as preview, retry next run

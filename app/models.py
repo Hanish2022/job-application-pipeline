@@ -25,6 +25,9 @@ class Job:
     salary_max: Optional[float] = None
     salary_currency: str = ""
     salary_period: str = "year"   # year | month | week | day | hour
+    # Already-normalised range in LPA (set when importing a feed; takes precedence over the fields above)
+    salary_lpa_min: Optional[float] = None
+    salary_lpa_max: Optional[float] = None
     tags: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

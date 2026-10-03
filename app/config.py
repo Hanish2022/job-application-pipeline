@@ -21,6 +21,7 @@ MAX_DESCRIPTION_CHARS = 8000
 ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", "")
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", "")
 TINYFISH_API_KEY = os.environ.get("TINYFISH_API_KEY", "")
+FEED_REPO_URL = os.environ.get("FEED_REPO_URL", "")   # private git repo holding the daily GitHub-Actions feed
 
 
 def load_dotenv(path: Path | None = None) -> None:
@@ -40,3 +41,4 @@ load_dotenv()
 TINYFISH_API_KEY = os.environ.get("TINYFISH_API_KEY", "")
 ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", ADZUNA_APP_ID)
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", ADZUNA_APP_KEY)
+FEED_REPO_URL = os.environ.get("FEED_REPO_URL", FEED_REPO_URL)
