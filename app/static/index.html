@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Jobs — matched to your resume</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%235e6ad2'/%3E%3Cpath d='M9 17l4.5 4.5L23 11' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#results">Skip to results</a>
+
+  <header class="topnav">
+    <div class="topnav__inner">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__name">Jobs</span>
+      </div>
+      <div class="topnav__meta" id="run-meta" aria-live="polite" data-testid="run-meta"></div>
+      <div class="topnav__actions">
+        <button class="btn btn--secondary btn--filters-toggle" id="filters-toggle" type="button" aria-expanded="false" aria-controls="filters">Filters</button>
+        <button class="btn btn--secondary" id="open-profile" type="button" data-testid="open-profile">Profile</button>
+        <button class="btn btn--primary" id="refresh" type="button" data-testid="refresh">
+          <span class="btn__label">Refresh jobs</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <p class="eyebrow">Matched to your resume</p>
+      <h1 id="greeting">Jobs for you</h1>
+      <p class="hero__sub" id="hero-sub">Loading your profile…</p>
+      <dl class="stats" id="stats" data-testid="stats"></dl>
+    </section>
+
+    <div class="layout">
+      <aside class="filters panel" id="filters" aria-label="Filters">
+        <div class="filters__head">
+          <h2 class="panel__title">Filters</h2>
+          <button class="link-btn" id="clear-filters" type="button" data-testid="clear-filters">Reset</button>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="q">Search</label>
+          <div class="input-wrap">
+            <svg class="input-wrap__icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <input id="q" class="input input--icon" type="search" placeholder="Title, company, skill…" autocomplete="off" data-testid="search">
+          </div>
+        </div>
+
+        <fieldset class="field">
+          <legend class="field__label">Match score</legend>
+          <div class="seg" role="radiogroup" aria-label="Minimum match score" id="f-score">
+            <button type="button" role="radio" class="seg__btn" data-value="0" aria-checked="false">Any</button>
+            <button type="button" role="radio" class="seg__btn" data-value="40" aria-checked="false">40+</button>
+            <button type="button" role="radio" class="seg__btn" data-value="60" aria-checked="false">60+</button>
+            <button type="button" role="radio" class="seg__btn" data-value="80" aria-checked="false">80+</button>
+          </div>
+        </fieldset>
+
+        <div class="field">
+          <label class="field__label" for="f-lpa">Salary (LPA)</label>
+          <select id="f-lpa" class="input" data-testid="lpa">
+            <option value="">Any</option>
+            <option value="listed">Salary listed</option>
+            <option value="5">₹5 LPA+</option>
+            <option value="10">₹10 LPA+</option>
+            <option value="15">₹15 LPA+</option>
+            <option value="25">₹25 LPA+</option>
+            <option value="40">₹40 LPA+</option>
+            <option value="60">₹60 LPA+</option>
+          </select>
+          <p class="hint" id="salary-hint" data-testid="salary-hint"></p>
+        </div>
+
+        <fieldset class="field">
+          <legend class="field__label">Level</legend>
+          <div class="checks" id="f-level">
+            <label class="check"><input type="checkbox" value="intern"><span>Internship</span></label>
+            <label class="check"><input type="checkbox" value="entry"><span>Entry / fresher</span></label>
+            <label class="check"><input type="checkbox" value="mid"><span>Mid</span></label>
+            <label class="check"><input type="checkbox" value="senior"><span>Senior</span></label>
+            <label class="check"><input type="checkbox" value="unknown"><span>Not specified</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend class="field__label">Location</legend>
+          <div class="checks" id="f-location">
+            <label class="check"><input type="checkbox" value="india"><span>India</span></label>
+            <label class="check"><input type="checkbox" value="remote"><span>Remote</span></label>
+          </div>
+        </fieldset>
+
+        <fieldset class="field">
+          <legend class="field__label">Source</legend>
+          <div class="checks" id="f-source"></div>
+        </fieldset>
+
+        <div class="field">
+          <label class="field__label" for="f-days">Posted</label>
+          <select id="f-days" class="input" data-testid="days">
+            <option value="">Any time</option>
+            <option value="1">Last 24 hours</option>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field__label" for="f-company">Company</label>
+          <input id="f-company" class="input" type="search" placeholder="e.g. Stripe" autocomplete="off" data-testid="company">
+        </div>
+      </aside>
+
+      <section class="results" id="results" tabindex="-1" aria-label="Job results">
+        <div class="toolbar">
+          <div class="tabs" role="tablist" aria-label="Job status" id="status-tabs">
+            <button class="tab" role="tab" type="button" data-value="" aria-selected="true" data-testid="tab-all">Active</button>
+            <button class="tab" role="tab" type="button" data-value="saved" aria-selected="false" data-testid="tab-saved">Saved <span class="tab__count" data-count="saved"></span></button>
+            <button class="tab" role="tab" type="button" data-value="applied" aria-selected="false" data-testid="tab-applied">Applied <span class="tab__count" data-count="applied"></span></button>
+            <button class="tab" role="tab" type="button" data-value="dismissed" aria-selected="false" data-testid="tab-dismissed">Dismissed <span class="tab__count" data-count="dismissed"></span></button>
+          </div>
+          <div class="toolbar__right">
+            <label class="sr-only" for="sort">Sort by</label>
+            <select id="sort" class="input input--sm" data-testid="sort">
+              <option value="score">Best match</option>
+              <option value="newest">Newest</option>
+              <option value="company">Company A–Z</option>
+              <option value="salary">Highest salary</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="chips" id="chips" aria-label="Active filters" data-testid="chips"></div>
+        <p class="count" id="count" role="status" aria-live="polite" data-testid="count"></p>
+
+        <ul class="joblist" id="joblist" data-testid="joblist"></ul>
+        <div class="state" id="state" hidden></div>
+        <div class="more"><button class="btn btn--secondary" id="load-more" type="button" hidden data-testid="load-more">Load more</button></div>
+      </section>
+    </div>
+  </main>
+
+  <div class="scrim" id="scrim" hidden></div>
+
+  <aside class="drawer" id="job-drawer" role="dialog" aria-modal="true" aria-labelledby="job-title" hidden data-testid="job-drawer">
+    <div class="drawer__head">
+      <div>
+        <p class="eyebrow" id="job-company"></p>
+        <h2 class="drawer__title" id="job-title"></h2>
+      </div>
+      <button class="icon-btn" type="button" data-close aria-label="Close details">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer__body" id="job-body"></div>
+    <div class="drawer__foot" id="job-foot"></div>
+  </aside>
+
+  <aside class="drawer" id="profile-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-title" hidden data-testid="profile-drawer">
+    <div class="drawer__head">
+      <div>
+        <p class="eyebrow">Your profile</p>
+        <h2 class="drawer__title" id="profile-title">Preferences</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close aria-label="Close profile">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer__body" id="profile-body">
+      <div class="field">
+        <span class="field__label">Resume</span>
+        <p class="muted" id="resume-file">—</p>
+        <label class="btn btn--secondary file-btn">
+          <input type="file" id="resume-file-input" accept=".pdf,.txt,.md" data-testid="resume-input">
+          <span>Upload new resume</span>
+        </label>
+      </div>
+      <div class="field">
+        <span class="field__label">Looking for</span>
+        <div class="checks">
+          <label class="check"><input type="checkbox" id="p-interns"><span>Internships</span></label>
+        </div>
+        <label class="field__label" for="p-level" style="margin-top:12px">Experience level</label>
+        <select id="p-level" class="input">
+          <option value="entry">Entry level / fresher</option>
+          <option value="mid">Mid level</option>
+          <option value="senior">Senior</option>
+        </select>
+      </div>
+      <fieldset class="field">
+        <legend class="field__label">Locations</legend>
+        <div class="checks">
+          <label class="check"><input type="checkbox" id="p-loc-india" value="india"><span>India</span></label>
+          <label class="check"><input type="checkbox" id="p-loc-remote" value="remote"><span>Remote</span></label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label class="field__label" for="p-skill-input">Skills</label>
+        <div class="tags" id="p-skills" data-testid="profile-skills"></div>
+        <form class="inline-form" id="p-skill-form">
+          <input id="p-skill-input" class="input" placeholder="Add a skill, e.g. typescript" maxlength="40" autocomplete="off">
+          <button class="btn btn--secondary" type="submit">Add</button>
+        </form>
+      </div>
+      <div class="field">
+        <label class="field__label" for="p-exclude-input">Hide titles containing</label>
+        <div class="tags" id="p-exclude"></div>
+        <form class="inline-form" id="p-exclude-form">
+          <input id="p-exclude-input" class="input" placeholder="e.g. sales" maxlength="40" autocomplete="off">
+          <button class="btn btn--secondary" type="submit">Add</button>
+        </form>
+      </div>
+      <p class="muted small" id="profile-msg" role="status" aria-live="polite"></p>
+    </div>
+    <div class="drawer__foot">
+      <button class="btn btn--primary" id="save-profile" type="button" data-testid="save-profile">Save &amp; re-match</button>
+    </div>
+  </aside>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden data-testid="toast"></div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
