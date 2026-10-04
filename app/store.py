@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,48 @@ from .models import Job
 from .textutil import is_india, norm, remote_eligible
 
 VALID_STATUSES = ("new", "saved", "applied", "dismissed")
+
+# Salary filter buckets (LPA). Ticking several means OR. A job matches a range bucket when its advertised range OVERLAPS it
+# (so ₹12-18 LPA appears under both "10-15" and "15-25"); "none" matches jobs with no salary.
+SALARY_BUCKETS = [("0-5", "Under ₹5 LPA"), ("5-10", "₹5–10 LPA"), ("10-15", "₹10–15 LPA"), ("15-25", "₹15–25 LPA"),
+                  ("25-40", "₹25–40 LPA"), ("40-", "₹40 LPA and above"), ("none", "Not listed")]
+_SALARY_TOKEN = re.compile(r"^(\d{1,4})-(\d{0,4})$")
+MAX_SALARY_TOKENS = 12
+
+
+def parse_salary_tokens(tokens: Iterable[str]) -> list[str]:
+    """Validate + de-duplicate salary bucket tokens: 'none', 'LO-HI' or open-ended 'LO-'. Raises ValueError."""
+    out: list[str] = []
+    for tok in tokens:
+        tok = (tok or "").strip()
+        if not tok:
+            continue
+        if tok != "none":
+            m = _SALARY_TOKEN.match(tok)
+            if not m or (m.group(2) and int(m.group(1)) >= int(m.group(2))):
+                raise ValueError(f"invalid salary range: {tok!r}")
+        if tok not in out:
+            out.append(tok)
+    if len(out) > MAX_SALARY_TOKENS:
+        raise ValueError("too many salary ranges")
+    return out
+
+
+def salary_clause(tokens: list[str]) -> tuple[str, list]:
+    """SQL for 'matches ANY of these buckets' (tokens must already be validated)."""
+    parts, args = [], []
+    for tok in tokens:
+        if tok == "none":
+            parts.append("salary_max_lpa IS NULL")
+            continue
+        lo, hi = _SALARY_TOKEN.match(tok).groups()
+        if hi:
+            parts.append("(salary_max_lpa > ? AND salary_min_lpa < ?)")      # strict on both sides: 5-10 does not spill into 10-15
+            args += [float(lo), float(hi)]
+        else:
+            parts.append("salary_max_lpa >= ?")
+            args.append(float(lo))
+    return "(" + " OR ".join(parts) + ")", args
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -297,6 +340,7 @@ class Store:
         posted_within_days: Optional[int] = None,
         min_lpa: Optional[float] = None,
         has_salary: bool = False,
+        salary: Optional[list[str]] = None,     # bucket tokens, OR-ed (see SALARY_BUCKETS)
         sort: str = "score",
         limit: int = 30,
         offset: int = 0,
@@ -319,6 +363,10 @@ class Store:
         if min_score:
             where.append("score >= ?")
             args.append(int(min_score))
+        if salary:
+            clause, clause_args = salary_clause(parse_salary_tokens(salary))
+            where.append(clause)
+            args += clause_args
         if min_lpa:
             where.append("salary_max_lpa >= ?")          # the top of the advertised range reaches the threshold
             args.append(float(min_lpa))
@@ -342,7 +390,7 @@ class Store:
             where.append(f"status IN ({','.join('?' * len(statuses))})")
             args += statuses
         else:
-            where.append("status != 'dismissed'")
+            where.append("status NOT IN ('dismissed', 'applied')")      # "Active" = still to act on: new + saved
         if posted_within_days:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=int(posted_within_days))).isoformat(timespec="seconds")
             # Fall back to first_seen when the source gives no posting date.
@@ -373,16 +421,23 @@ class Store:
             by_source = {r["source"]: r["n"] for r in c.execute(
                 "SELECT source, COUNT(*) n FROM jobs WHERE closed=0 GROUP BY source")}
             with_salary = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND salary_max_lpa IS NOT NULL").fetchone()[0]
-            strong = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND score>=60 AND status!='dismissed'").fetchone()[0]
+            strong = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND score>=60 AND status NOT IN ('dismissed', 'applied')").fetchone()[0]
             new_today = c.execute(
                 "SELECT COUNT(*) FROM jobs WHERE closed=0 AND first_seen >= ?",
                 ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds"),),
             ).fetchone()[0]
+            buckets = {}
+            for token, _label in SALARY_BUCKETS:        # counts across the jobs you still have to act on (the Active tab)
+                clause, clause_args = salary_clause([token])
+                buckets[token] = c.execute(
+                    f"SELECT COUNT(*) FROM jobs WHERE closed=0 AND status NOT IN ('dismissed', 'applied') AND {clause}", clause_args
+                ).fetchone()[0]
             last = c.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         return {
             "total": total,
             "strong_matches": strong,
             "with_salary": with_salary,
+            "salary_buckets": buckets,
             "new_last_24h": new_today,
             "by_status": by_status,
             "by_source": by_source,

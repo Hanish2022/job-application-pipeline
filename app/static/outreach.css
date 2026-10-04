@@ -1,0 +1,77 @@
+/* Theme for the vendored Cold-email page (vendor/yc-outreach/index.html, which we don't edit).
+   It maps that page's own colour variables onto our Linear-style tokens from shell.css, then fixes the few places
+   where its layout meets our navbar. Loaded AFTER the page's inline <style>, so these win. */
+:root {
+  --bg: var(--canvas);
+  --card: var(--surface-1);
+  --fg: var(--ink);
+  --muted: var(--ink-subtle);
+  --line: var(--hairline);
+  --accent: var(--primary);
+  --ok: rgb(var(--green-rgb));
+  --warn: rgb(var(--yellow-rgb));
+  --err: rgb(var(--red-rgb));
+}
+body { font-family: var(--font); background: var(--canvas); color: var(--ink); -webkit-font-smoothing: antialiased; }
+main { padding-top: 40px; padding-bottom: 96px; }
+h1 { font-size: 40px; line-height: 1.15; font-weight: 600; letter-spacing: -1px; }
+.panel, details { border-radius: var(--r-lg); }
+input, select, textarea { border-radius: var(--r-md); background: var(--canvas); }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible, a:focus-visible {
+  outline: 2px solid rgba(94, 105, 209, 0.9); outline-offset: 2px;
+}
+button, a.btn { border-radius: var(--r-md); min-height: 32px; }
+button.primary { background: var(--primary); border-color: var(--primary); }
+button.primary:hover:not(:disabled) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.bar { top: var(--nav-h); z-index: 5; background: rgba(1, 1, 2, 0.92); backdrop-filter: blur(8px); }
+.bar input[type="search"], .bar input:not([type]) { background: var(--surface-1); }
+.bar .chk { gap: 8px; }
+.bar .chk input { flex: none; width: 16px; min-width: 0; height: 16px; accent-color: var(--primary); }
+pre { background: var(--canvas); }
+@media (max-width: 768px) {
+  main { padding-top: 24px; }
+  h1 { font-size: 30px; letter-spacing: -0.7px; }
+  .bar { top: 0; position: static; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---- plain-language layer (app/static/outreach.js) ---- */
+[hidden] { display: none !important; }
+.oc-steps { margin: 8px 0 10px 1.2em; padding: 0; color: var(--ink-muted); }
+.oc-steps li { margin: 2px 0; }
+.oc-strong { color: var(--ink); font-weight: 500; }
+.oc-optional { font-weight: 400; color: var(--ink-subtle); font-size: 13px; }
+.oc-note { margin: 0 0 12px; color: var(--ink-subtle); font-size: 14px; line-height: 1.5; }
+.oc-warn { margin: 8px 0; padding: 8px 12px; border: 1px solid rgba(217, 164, 65, .5); border-radius: var(--r-md); color: var(--warn); font-size: 13px; }
+.oc-preview { margin: 12px 0 0; border: 1px dashed var(--hairline-strong); border-radius: var(--r-md); padding: 12px; }
+.oc-preview__head { font-size: 12px; color: var(--ink-subtle); text-transform: uppercase; letter-spacing: .4px; margin-bottom: 8px; }
+.oc-preview__subject { font-weight: 500; margin-bottom: 8px; overflow-wrap: anywhere; }
+.oc-preview__body { margin: 0; background: transparent; border: 0; padding: 0; color: var(--ink-muted); }
+.oc-toggle-row { margin: 0 0 16px; }
+.oc-toggle { background: none; border: 0; padding: 4px 0; min-height: 0; color: var(--ink-subtle); font-size: 14px; text-decoration: underline; text-underline-offset: 3px; }
+.oc-toggle:hover { color: var(--ink); }
+.oc-legend { margin: 0 0 12px; font-size: 13px; color: var(--ink-subtle); line-height: 1.5; }
+.oc-hint { margin: 6px 0 0 0; padding-left: 76px; font-size: 13px; color: var(--ink-subtle); line-height: 1.45; }
+.oc-draft-head { margin: 14px 0 0; font-size: 12px; font-weight: 500; color: var(--ink-subtle); text-transform: uppercase; letter-spacing: .4px; }
+.r b { width: 76px !important; }
+@media (max-width: 768px) { .oc-hint { padding-left: 0; } }
+
+/* ---- simple step 2 ---- */
+.oc-two { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; align-items: start; margin-top: 4px; }
+#oc-about { min-height: 92px; resize: vertical; }
+.oc-nudge { margin: 6px 0 0; font-size: 13px; color: var(--ink-subtle); }
+.oc-advanced-panel { margin-top: 4px; }
+.oc-advanced-panel label.f { margin-top: 10px; }
+.oc-advanced-panel textarea { min-height: 200px; }
+@media (max-width: 768px) { .oc-two { grid-template-columns: 1fr; } }
+
+/* ---- colour tags: email confidence uses the same tag system as the Jobs page ---- */
+a { color: rgb(var(--violet-rgb)); }                      /* brand violet fails contrast as text; the lighter violet passes */
+a.lnk { color: var(--ink-subtle); }
+.badge { border-radius: var(--r-sm); font-weight: 500; padding: 1px 8px; color: rgb(var(--c, var(--gray-rgb))); background: rgba(var(--c, var(--gray-rgb)), .15); border: 1px solid rgba(var(--c, var(--gray-rgb)), .28); }
+.badge.site { --c: var(--blue-rgb); }
+.badge.guess, .badge.unknown { --c: var(--yellow-rgb); }
+.badge.valid { --c: var(--green-rgb); }
+.badge.none { --c: var(--gray-rgb); }
+details[open] { border-color: var(--hairline-strong); }
+details.sent { opacity: .5; }

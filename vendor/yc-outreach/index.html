@@ -1,0 +1,335 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>YC Founder Outreach</title>
+<meta name="description" content="Pick a YC batch, find founder emails, and write personalised cold emails from one template.">
+<style>
+:root{--bg:#f7f7f5;--card:#fff;--fg:#1c1c1a;--muted:#6b6b66;--line:#e4e3de;--accent:#e2561b;--ok:#1f8a4c;--warn:#a86b00;--err:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--card:#1e1e1c;--fg:#ecebe6;--muted:#9a998f;--line:#302f2b;--accent:#f07a45;--ok:#4cc27d;--warn:#e0a53a;--err:#e8705f}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,"Segoe UI",sans-serif}
+main{max-width:860px;margin:0 auto;padding:32px 16px}h1{margin:0 0 4px;font-size:24px}h2{font-size:16px;margin:0 0 10px}
+p.sub{margin:0 0 20px;color:var(--muted)}a{color:var(--accent)}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px}
+label.f{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--muted)}
+input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+textarea{min-height:260px;resize:vertical;line-height:1.5}
+.ph{font-size:13px;color:var(--muted);margin:8px 0 0}.ph code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:0 5px;margin-right:4px;cursor:pointer}
+.row2{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}.row2 select,.row2 input{width:auto;flex:1;min-width:160px}
+.status{font-size:13px;color:var(--muted);margin:10px 0 0;min-height:1.5em}.status.err{color:var(--err)}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;position:sticky;top:0;background:var(--bg);padding:8px 0;z-index:1;align-items:center}
+.bar input{flex:1;min-width:180px;width:auto;background:var(--card)}.bar select{width:auto;background:var(--card)}
+.chk{display:flex;gap:6px;align-items:center;font-size:14px;color:var(--muted);white-space:nowrap}.chk input{width:auto}
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:8px}details.sent{opacity:.55}
+summary{cursor:pointer;padding:12px 14px;display:flex;gap:10px;align-items:center;list-style:none}summary::-webkit-details-marker{display:none}
+summary::before{content:"▸";color:var(--muted)}details[open] summary::before{content:"▾"}
+.name{font-weight:600}.meta{color:var(--muted);font-size:13px;margin-left:auto;text-align:right}
+.badge{font-size:12px;padding:1px 8px;border-radius:99px;border:1px solid currentColor;white-space:nowrap}
+.valid{color:var(--ok)}.unknown,.guess{color:var(--warn)}.site{color:var(--accent)}.none{color:var(--muted)}
+.body{padding:0 14px 14px;border-top:1px solid var(--line)}.r{margin:10px 0 0;font-size:14px;overflow-wrap:anywhere}.r b{color:var(--muted);font-weight:500;display:inline-block;width:64px}
+.one{color:var(--muted);font-size:14px;margin:10px 0 0}
+pre{white-space:pre-wrap;font:inherit;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;margin:10px 0}
+.acts{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+button,a.btn{font:inherit;font-size:13px;cursor:pointer;border-radius:8px;padding:6px 12px;border:1px solid var(--line);background:var(--card);color:var(--fg);text-decoration:none}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}button:disabled{opacity:.5;cursor:default}
+a.lnk{color:var(--muted);font-size:13px}
+footer{color:var(--muted);font-size:13px;margin-top:32px}
+</style></head><body><main>
+<h1>YC Founder Outreach</h1>
+<p class="sub">Pick a YC batch, find founder emails, and write personalised cold emails from one template. Free without any keys; everything you type stays in your browser.</p>
+
+<section class="panel">
+  <h2>1. Your details</h2>
+  <div class="grid">
+    <label class="f">Your name<input data-k="my_name" placeholder="Jane Doe" autocomplete="name"></label>
+    <label class="f">Portfolio / website<input data-k="portfolio" placeholder="https://..."></label>
+    <label class="f">GitHub<input data-k="github" placeholder="https://github.com/..."></label>
+    <label class="f">Resume link<input data-k="resume" placeholder="https://..."></label>
+  </div>
+  <h2>2. Email template</h2>
+  <label class="f">Subject<input data-k="subject"></label>
+  <label class="f" style="margin-top:10px">Body<textarea data-k="body"></textarea></label>
+  <p class="ph" id="vars">Click to insert: <code>{first_name}</code><code>{company}</code><code>{one_liner}</code><code>{batch}</code><code>{my_name}</code><code>{portfolio}</code><code>{github}</code><code>{resume}</code>
+  &nbsp;<button id="reset" type="button">Reset template</button></p>
+  <p class="ph">Lines like <code>resume: {resume}</code> are dropped when you leave that field empty. Email labels: <span class="badge valid">verified</span> / <span class="badge unknown">unverified</span> come from Apify (step 4), <span class="badge site">on site</span> is listed on the company's website, <span class="badge guess">guess</span> is the most common pattern (right about 80% of the time) and may bounce.</p>
+</section>
+
+<section class="panel">
+  <h2>3. Pick a YC batch</h2>
+  <div class="row2">
+    <select id="batch" aria-label="YC batch"><option value="">Loading batches…</option></select>
+    <button id="load" class="primary" type="button" disabled>Load companies</button>
+  </div>
+  <p class="status" id="loadStatus"></p>
+</section>
+
+<section class="panel">
+  <h2>4. Find verified emails <span style="font-weight:400;color:var(--muted)">(optional)</span></h2>
+  <p class="ph" style="margin:0 0 10px">Without this you get emails listed on company sites plus pattern guesses like <code>first@domain</code> (right about 80% of the time). For verified emails, paste your own
+    <a href="https://console.apify.com/settings/integrations" target="_blank" rel="noopener">Apify API token</a>. Lookups run from your browser straight to Apify on your account; the token is never sent to this site's server and isn't saved.</p>
+  <div class="row2">
+    <label class="f" style="flex:2">Apify token<input id="token" type="password" placeholder="apify_api_..." autocomplete="off"></label>
+    <label class="f" style="flex:1">Max USD per run (50 founders)<input id="cap" type="number" min="0.1" step="0.1" value="1"></label>
+    <button id="enrich" type="button" disabled>Find emails</button>
+  </div>
+  <p class="status" id="enrichStatus"></p>
+</section>
+
+<div class="bar">
+  <input id="q" placeholder="Search company or founder" aria-label="Search">
+  <select id="st" aria-label="Email type"><option value="">All emails</option><option value="valid">Verified</option><option value="unknown">Unverified</option><option value="site">Found on site</option><option value="guess">Guess</option><option value="none">No email</option></select>
+  <label class="chk"><input type="checkbox" id="hideSent"> hide sent</label>
+  <button id="all" type="button">Expand all</button>
+</div>
+<p class="sub" id="shown" style="margin:0 0 10px"></p>
+<div id="list"></div>
+<p style="text-align:center"><button id="more" class="primary" type="button" hidden>Load more</button></p>
+<footer>Open source. Company and founder data comes from YC's public directory. Please write to people one at a time and respect "no".</footer>
+</main>
+<script>
+const DEFAULTS = {
+  my_name: "", portfolio: "", github: "", resume: "",
+  subject: "interested in {company}",
+  body: `Hey {first_name},
+
+saw {company} and {one_liner} really stood out.
+
+[1-2 lines about you: what you're doing now and what you've built]
+
+[1 line on relevant experience: stack, projects, open source]
+
+would love to explore if there's a role at {company}.
+
+- {my_name}
+portfolio: {portfolio}
+github: {github}
+resume: {resume}`
+};
+const KEY = "yc-outreach-v2";
+const ACTOR = "snipercoder~email-finder-by-name-and-domain";
+const APIFY = "https://api.apify.com/v2";
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d } catch { return d } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)) } catch {} } };
+let tpl = Object.assign({}, DEFAULTS, store.get(KEY, {}));
+let sent = new Set(store.get(KEY + "-sent", []));
+let ALL = [], DATA = [], batch = "";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const url = s => /^https?:\/\//i.test(s || "") ? esc(s) : "";
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const say = (id, msg, err) => { $(id).textContent = msg; $(id).classList.toggle("err", !!err) };
+
+async function api(params) {
+  const r = await fetch("/api/yc?" + new URLSearchParams(params));
+  const j = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+  if (!r.ok) throw new Error(j.error || `HTTP ${r.status}`);
+  return j;
+}
+
+// Best email for a founder: verified > unverified (Apify) > on the company site > pattern guess
+function best(f) {
+  if (f.apify_email) return { email: f.apify_email, kind: f.apify_status === "valid" ? "valid" : "unknown", label: f.apify_status === "valid" ? "verified" : "unverified" };
+  if (f.emails_found?.length) return { email: f.emails_found[0], kind: "site", label: "on site" };
+  if (f.email_guesses?.length) return { email: f.email_guesses[0], kind: "guess", label: "guess" };
+  return { email: "", kind: "none", label: "no email" };
+}
+const RANK = { valid: 0, unknown: 1, site: 2, guess: 3, none: 4 };
+// Primary contact: best email first, then CEO
+function contacts(c) {
+  return [...(c.founders || [])].sort((a, b) => (RANK[best(a).kind] - RANK[best(b).kind]) || (!/ceo/i.test(a.title) - !/ceo/i.test(b.title)));
+}
+
+function fill(text, c) {
+  const f = contacts(c)[0] || { name: "" };
+  const vars = { first_name: f.name.split(" ")[0] || "there", company: c.name, one_liner: (c.one_liner || "what you're building").replace(/\.$/, "").toLowerCase(),
+                 batch: c.batch, my_name: tpl.my_name, portfolio: tpl.portfolio, github: tpl.github, resume: tpl.resume };
+  const out = text.replace(/\{(\w+)\}/g, (m, k) => k in vars ? vars[k] : m);
+  return out.split("\n").filter(l => !/^\s*[\w ]+:\s*$/.test(l)).join("\n");
+}
+
+function render() {
+  $("list").innerHTML = DATA.map((c, i) => {
+    const fs = contacts(c), f = fs[0], b = f ? best(f) : { kind: c.founders ? "none" : "", label: c.error ? "error" : c.founders ? "no email" : "loading…" };
+    const key = (c.name + " " + fs.map(o => o.name).join(" ")).toLowerCase();
+    return `<details data-i="${i}" data-k="${esc(key)}" data-s="${b.kind}" class="${sent.has(c.name) ? "sent" : ""}">
+      <summary><span class="name">${esc(c.name)}</span><span class="badge ${b.kind || "none"}">${esc(b.label)}</span>
+      <span class="meta">${esc(f?.name || "")}<br>${esc(c.batch)}</span></summary>
+      <div class="body">
+        <p class="one">${esc(c.one_liner)}${url(c.website) ? ` · <a class="lnk" href="${url(c.website)}" target="_blank" rel="noopener">website</a>` : ""} · <a class="lnk" href="https://www.ycombinator.com/companies/${esc(c.slug)}" target="_blank" rel="noopener">YC</a>${url(f?.linkedin) ? ` · <a class="lnk" href="${url(f.linkedin)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}${url(f?.twitter) ? ` · <a class="lnk" href="${url(f.twitter)}" target="_blank" rel="noopener">X</a>` : ""}</p>
+        ${c.error ? `<p class="status err">${esc(c.error)}</p>` : ""}
+        ${fs.map(o => { const e = best(o); return `<div class="r"><b>${o === f ? "To" : "Also"}</b>${esc(o.name)}${o.title ? ` (${esc(o.title)})` : ""} · ${esc(e.email || "no email")} <span class="badge ${e.kind}">${e.label}</span></div>` }).join("")}
+        <div class="r"><b>Subject</b><span class="subj"></span></div>
+        <pre></pre>
+        <div class="acts">
+          <button class="primary" data-a="body" type="button">Copy body</button><button data-a="to" type="button">Copy email</button><button data-a="subject" type="button">Copy subject</button>
+          <a class="btn mail" href="#">Open in mail app</a>
+          <label class="chk"><input type="checkbox" data-a="sent" ${sent.has(c.name) ? "checked" : ""}> sent</label>
+        </div>
+      </div></details>`;
+  }).join("");
+  update();
+  filter();
+}
+
+// Fill drafts lazily when opened, and refresh open ones when the template changes
+function draft(d) {
+  const c = DATA[d.dataset.i], to = contacts(c)[0], subject = fill(tpl.subject, c), body = fill(tpl.body, c);
+  d.querySelector(".subj").textContent = subject;
+  d.querySelector("pre").textContent = body;
+  d.querySelector(".mail").href = `mailto:${encodeURIComponent(to ? best(to).email : "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+}
+function update() { document.querySelectorAll("details[open]").forEach(draft) }
+
+function filter() {
+  const q = $("q").value.trim().toLowerCase(), st = $("st").value, hide = $("hideSent").checked;
+  let n = 0;
+  document.querySelectorAll("details").forEach(d => {
+    const ok = (!q || d.dataset.k.includes(q)) && (!st || d.dataset.s === st) && !(hide && d.classList.contains("sent"));
+    d.style.display = ok ? "" : "none"; n += ok;
+  });
+  $("shown").textContent = DATA.length ? `${n} of ${DATA.length} shown · ${sent.size} sent` : "";
+}
+
+// ALL = every company in the batch; DATA = the ones whose founders are loaded (what the list shows)
+const PAGE = 20;
+const save = () => store.set(`${KEY}-batch-${batch}`, ALL);
+const busy = on => { $("load").disabled = $("more").disabled = on; $("enrich").disabled = on || !DATA.length };
+function progress() {
+  const left = ALL.length - DATA.length, failed = DATA.filter(c => c.error).length;
+  say("loadStatus", `${DATA.length} of ${ALL.length} companies loaded${failed ? `, ${failed} couldn't be loaded` : ""}.`, failed > 0);
+  $("more").hidden = !left;
+  $("more").textContent = `Load ${Math.min(PAGE, left)} more (${left} left)`;
+}
+
+async function loadBatch() {
+  batch = $("batch").value;
+  if (!batch) return;
+  busy(true);
+  ALL = store.get(`${KEY}-batch-${batch}`, null) || [];
+  try {
+    if (!ALL.length) {
+      say("loadStatus", "Loading companies…");
+      ALL = (await api({ action: "companies", batch })).sort((a, b) => b.launched_at - a.launched_at);
+      save();
+    }
+  } catch (e) {
+    busy(false);
+    return say("loadStatus", `Couldn't load this batch: ${e.message}`, true);
+  }
+  DATA = ALL.filter(c => c.founders || c.error);
+  render();
+  if (!DATA.length) return loadMore();
+  progress(); busy(false);
+}
+
+// Founders come from each company's YC page, so load them PAGE at a time: 10 per request, 2 requests at once
+async function loadMore() {
+  const next = ALL.filter(c => !c.founders && !c.error).slice(0, PAGE);
+  if (!next.length) return progress();
+  busy(true);
+  const chunks = [];
+  for (let i = 0; i < next.length; i += 10) chunks.push(next.slice(i, i + 10));
+  say("loadStatus", `Loading founders for ${next.length} companies…`);
+  await Promise.all(chunks.map(async chunk => {
+    try {
+      const res = await api({ action: "founders", slugs: chunk.map(c => c.slug).join(",") });
+      res.forEach((r, j) => Object.assign(chunk[j], r));
+    } catch (e) { chunk.forEach(c => c.error = `Couldn't load founders: ${e.message}`) }
+    DATA = ALL.filter(c => c.founders || c.error);
+    render();
+  }));
+  save(); progress(); busy(false);
+}
+
+async function apify(method, path, token, body) {
+  const r = await fetch(APIFY + path, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                                        body: body ? JSON.stringify(body) : undefined });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error?.message || `Apify HTTP ${r.status}`);
+  return j;
+}
+
+async function enrich() {
+  const token = $("token").value.trim(), cap = Math.max(0.1, +$("cap").value || 1);
+  if (!token) return say("enrichStatus", "Paste your Apify token first.", true);
+  const people = DATA.flatMap(c => (c.founders || []).filter(f => f.name && c.domain && !f.apify_checked).map(f => ({ f, name: f.name, domain: c.domain })));
+  if (!people.length) return say("enrichStatus", "Nothing left to look up in this batch.");
+  const runs = Math.ceil(people.length / 50);
+  if (!confirm(`Look up ${people.length} founders on your Apify account? That's ${runs} run${runs > 1 ? "s" : ""}, each capped at $${cap}.`)) return;
+  busy(true);
+  let found = 0;
+  try {
+    // Large single runs crash the actor, so send 50 at a time and keep results as each finishes
+    for (let i = 0; i < people.length; i += 50) {
+      const chunk = people.slice(i, i + 50);
+      say("enrichStatus", `Run ${i / 50 + 1}/${runs}: starting…`);
+      let run = (await apify("POST", `/acts/${ACTOR}/runs?maxTotalChargeUsd=${cap}&memory=1024`, token,
+                             { names: chunk.map(p => p.name), domains: chunk.map(p => p.domain) })).data;
+      while (["READY", "RUNNING"].includes(run.status)) {
+        say("enrichStatus", `Run ${i / 50 + 1}/${runs}: ${run.status.toLowerCase()}…`);
+        await sleep(5000);
+        run = (await apify("GET", `/actor-runs/${run.id}`, token)).data;
+      }
+      if (run.status !== "SUCCEEDED") throw new Error(`Apify run ended as ${run.status}`);
+      const items = await apify("GET", `/datasets/${run.defaultDatasetId}/items?clean=true&format=json`, token);
+      for (const p of chunk) {
+        const hit = items.find(it => it.Found && it.Email && String(it.Name).toLowerCase() === p.name.toLowerCase() && String(it.Domain).toLowerCase() === p.domain);
+        p.f.apify_checked = true;
+        if (hit) { p.f.apify_email = String(hit.Email).toLowerCase(); p.f.apify_status = hit.Validation || ""; found++ }
+      }
+      save(); render();
+    }
+    say("enrichStatus", `Done: found ${found} of ${people.length} emails.`);
+  } catch (e) {
+    say("enrichStatus", `Stopped: ${e.message}. Found ${found} so far; press again to continue.`, true);
+  } finally {
+    busy(false);
+  }
+}
+
+$("list").addEventListener("toggle", e => { if (e.target.open) draft(e.target) }, true);
+$("list").addEventListener("click", e => {
+  const b = e.target.closest("[data-a]"); if (!b) return;
+  const d = b.closest("details"), c = DATA[d.dataset.i];
+  if (b.dataset.a === "sent") {
+    b.checked ? sent.add(c.name) : sent.delete(c.name);
+    d.classList.toggle("sent", b.checked); store.set(KEY + "-sent", [...sent]); filter(); return;
+  }
+  const to = contacts(c)[0];
+  const txt = b.dataset.a === "body" ? d.querySelector("pre").textContent : b.dataset.a === "subject" ? d.querySelector(".subj").textContent : to ? best(to).email : "";
+  navigator.clipboard.writeText(txt).then(() => { const o = b.textContent; b.textContent = "Copied"; setTimeout(() => b.textContent = o, 1200) });
+});
+["q", "st", "hideSent"].forEach(id => $(id).addEventListener(id === "q" ? "input" : "change", filter));
+$("all").onclick = e => {
+  const open = e.target.textContent === "Expand all";
+  document.querySelectorAll("details").forEach(d => { if (d.style.display !== "none") d.open = open });
+  e.target.textContent = open ? "Collapse all" : "Expand all";
+};
+document.querySelectorAll("[data-k]").forEach(el => {
+  if (!(el.dataset.k in tpl)) return;
+  el.value = tpl[el.dataset.k];
+  el.addEventListener("input", () => { tpl[el.dataset.k] = el.value; store.set(KEY, tpl); update(); });
+});
+let lastField = document.querySelector('textarea[data-k="body"]');
+document.querySelectorAll('input[data-k="subject"], textarea[data-k="body"]').forEach(el => el.addEventListener("focus", () => lastField = el));
+$("vars").addEventListener("click", e => {
+  if (e.target.tagName !== "CODE") return;
+  const el = lastField, s = el.selectionStart ?? el.value.length;
+  el.value = el.value.slice(0, s) + e.target.textContent + el.value.slice(el.selectionEnd ?? s);
+  el.focus(); el.selectionStart = el.selectionEnd = s + e.target.textContent.length;
+  el.dispatchEvent(new Event("input"));
+});
+$("reset").onclick = () => {
+  tpl.subject = DEFAULTS.subject; tpl.body = DEFAULTS.body; store.set(KEY, tpl);
+  document.querySelector('[data-k="subject"]').value = tpl.subject; document.querySelector('[data-k="body"]').value = tpl.body; update();
+};
+$("load").onclick = loadBatch;
+$("more").onclick = loadMore;
+$("enrich").onclick = enrich;
+$("batch").onchange = () => store.set(KEY + "-last", $("batch").value);
+
+api({ action: "batches" }).then(bs => {
+  const last = store.get(KEY + "-last", "");
+  $("batch").innerHTML = bs.filter(b => b.batch !== "Unspecified")
+    .map(b => `<option value="${esc(b.batch)}" ${b.batch === last ? "selected" : ""}>${esc(b.batch)} (${b.count} companies)</option>`).join("");
+  $("load").disabled = false;
+}).catch(e => { $("batch").innerHTML = "<option value=''>Couldn't load batches</option>"; say("loadStatus", e.message, true) });
+</script></body></html>

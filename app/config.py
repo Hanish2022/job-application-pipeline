@@ -12,6 +12,10 @@ COMPANIES_PATH = Path(os.environ.get("JOBS_COMPANIES_PATH", ROOT / "companies.js
 STATIC_DIR = ROOT / "app" / "static"
 DEFAULT_RESUME = Path(os.environ.get("JOBS_RESUME", Path.home() / "Downloads" / "new_resume.pdf"))
 
+# The product name shown in the navbar, page titles and tooltips. Change it here or set APP_NAME in .env.
+DEFAULT_APP_NAME = "Foothold"
+APP_NAME = DEFAULT_APP_NAME
+
 USER_AGENT = "jobs-pipeline/1.0 (personal job discovery; public job-board APIs only)"
 HTTP_TIMEOUT = 30.0
 MAX_CONCURRENCY = 8
@@ -42,3 +46,13 @@ TINYFISH_API_KEY = os.environ.get("TINYFISH_API_KEY", "")
 ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID", ADZUNA_APP_ID)
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY", ADZUNA_APP_KEY)
 FEED_REPO_URL = os.environ.get("FEED_REPO_URL", FEED_REPO_URL)
+
+
+def _clean_name(value: str) -> str:
+    """A safe, short display name (letters, digits, spaces and a few symbols); falls back to the default."""
+    import re
+    name = re.sub(r"[^\w .&+'-]", "", (value or "")).strip()[:30]
+    return name or DEFAULT_APP_NAME
+
+
+APP_NAME = _clean_name(os.environ.get("APP_NAME", DEFAULT_APP_NAME))

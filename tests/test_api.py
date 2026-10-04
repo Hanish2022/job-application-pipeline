@@ -188,3 +188,60 @@ def test_salary_fields_filters_and_sort(store, profile):
     assert c.get("/api/stats").json()["with_salary"] == 2
     for bad in ("min_lpa=-1", "min_lpa=1001", "min_lpa=abc", "has_salary=maybe"):
         assert c.get(f"/api/jobs?{bad}").status_code == 422
+
+
+def test_default_list_is_active_only_new_and_saved_applied_and_dismissed_are_opt_in(seeded):
+    c = TestClient(create_app(seeded, crawler=lambda s: {}))
+    ids = {j["title"]: j["id"] for j in c.get("/api/jobs?min_score=0").json()["items"]}
+    assert len(ids) == 3
+    c.post(f"/api/jobs/{ids['Senior Backend Engineer']}/status", json={"status": "saved"})
+    c.post(f"/api/jobs/{ids['Frontend Intern']}/status", json={"status": "applied"})
+    c.post(f"/api/jobs/{ids['Full Stack Developer (0-2 years)']}/status", json={"status": "dismissed"})
+    active = {j["title"] for j in c.get("/api/jobs?min_score=0").json()["items"]}
+    assert active == {"Senior Backend Engineer"}                                        # saved stays; applied and dismissed leave
+    assert {j["title"] for j in c.get("/api/jobs?status=applied&min_score=0").json()["items"]} == {"Frontend Intern"}
+    assert {j["title"] for j in c.get("/api/jobs?status=dismissed&min_score=0").json()["items"]} == {"Full Stack Developer (0-2 years)"}
+    both = {j["title"] for j in c.get("/api/jobs?status=saved,applied&min_score=0").json()["items"]}
+    assert both == {"Senior Backend Engineer", "Frontend Intern"}
+    s = c.get("/api/stats").json()
+    assert s["by_status"] == {"saved": 1, "applied": 1, "dismissed": 1}                 # counts for the tabs still include everything
+    assert s["strong_matches"] == 0                                                     # the only active job is a senior role (score 25)
+    c.post(f"/api/jobs/{ids['Frontend Intern']}/status", json={"status": "new"})        # un-apply -> back in Active
+    assert "Frontend Intern" in {j["title"] for j in c.get("/api/jobs?min_score=0").json()["items"]}
+
+
+def test_job_detail_explains_the_score(client, seeded):
+    items = {j["title"]: j for j in client.get("/api/jobs?min_score=0").json()["items"]}
+    good = client.get(f"/api/jobs/{items['Full Stack Developer (0-2 years)']['id']}").json()
+    b = good["breakdown"]
+    assert set(b["parts"]) == {"skills", "role", "level", "location"} and b["cap"] is None
+    assert b["total"] == good["score"] == round(sum(p["points"] for p in b["parts"].values()))        # the parts ARE the score
+    assert {k: p["max"] for k, p in b["parts"].items()} == {"skills": 50, "role": 25, "level": 20, "location": 5}
+    senior = client.get(f"/api/jobs/{items['Senior Backend Engineer']['id']}").json()["breakdown"]
+    assert senior["cap"] == 25 and senior["total"] == 25 and sum(p["points"] for p in senior["parts"].values()) > 25
+
+
+def test_job_detail_has_no_breakdown_without_a_profile(store):
+    store.upsert_jobs([make_job()])
+    c = TestClient(create_app(store, crawler=lambda s: {}))
+    (item,) = c.get("/api/jobs?min_score=0").json()["items"]
+    assert c.get(f"/api/jobs/{item['id']}").json()["breakdown"] is None
+
+
+def test_salary_param_multi_select_and_validation(store, profile):
+    store.save_profile(profile)
+    store.upsert_jobs([
+        make_job(external_id="1", title="Dev One", salary_min=1_500_000, salary_max=2_000_000, salary_currency="INR"),     # 15-20
+        make_job(external_id="2", title="Dev Two", salary_min=90_000, salary_max=110_000, salary_currency="USD"),           # ≈79-97
+        make_job(external_id="3", title="Dev Three"),
+    ])
+    c = TestClient(create_app(store, crawler=lambda s: {}))
+    titles = lambda qs: {j["title"] for j in c.get("/api/jobs?min_score=0&" + qs).json()["items"]}   # noqa: E731
+    assert titles("salary=15-25") == {"Dev One"}
+    assert titles("salary=15-25,40-") == {"Dev One", "Dev Two"}
+    assert titles("salary=15-25,none") == {"Dev One", "Dev Three"}
+    assert titles("salary=") == {"Dev One", "Dev Two", "Dev Three"}
+    assert titles("salary=15-25&has_salary=true&min_lpa=10") == {"Dev One"}
+    assert c.get("/api/stats").json()["salary_buckets"]["15-25"] == 1
+    for bad in ("5", "10-5", "x-y", "1-2;drop", "5-10,,oops", ",".join(f"{i}-{i + 1}" for i in range(20))):
+        assert c.get("/api/jobs?salary=" + bad).status_code == 422, bad

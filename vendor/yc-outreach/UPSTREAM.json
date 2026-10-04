@@ -1,0 +1,21 @@
+{
+  "project": "yc-outreach",
+  "url": "https://github.com/adityajha2005/yc-outreach",
+  "ref": "main",
+  "commit": "4cb5f1858c3a989a29c4543942780738e737f2f5",
+  "license": "MIT",
+  "vendored_on": "2026-10-04",
+  "note": "Unmodified copy. Our integration is in app/outreach.py and app/static/. Update with scripts/update_outreach.sh.",
+  "files": {
+    ".gitignore": "d1e719c299da9acf1e55db8b75da3952e164ccacd392278534a7404e211a8e8c",
+    ".vercelignore": "1105ba4a6e0635db4e5c739459ccb75cd73d586d2ce8c8257602329c6a76a7a8",
+    "LICENSE": "77cba91f557900a20829dde76f70020315b846c3171a2f31823778fdacf9378e",
+    "README.md": "063e38865f3f5fcbc7b2b51fab557a4aac6402e44a2820cd01ff877591185afc",
+    "api/yc.py": "50d56b8a74467472213525f9780204c3181165beb6b75ccf6a40aacd8c64a603",
+    "apify_enrich.py": "a80f8d36319778e6ab000d51f6a8d8e9a75c0a329b7f582b759f971f9702bfe9",
+    "index.html": "91500391f9bd31d3449354cd77332291df514e9f247de307b26e93bb1af8938e",
+    "serve.py": "c682b441c23af8883c45716b04cb7d9b46df3c9bf405e7ce68c70d0574c09d0c",
+    "vercel.json": "8de84a1f8796b972eb2a5cb44cde819884ba3f1099620eaea05c501f2ea0e2be",
+    "yc_scraper.py": "12d2a83db9561dd9e7a5b7726f766563a822a4c4c69d07f92b7878efa92dc018"
+  }
+}

@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 from .. import config
 from ..models import Job
-from ..textutil import html_to_text, to_iso
+from ..textutil import html_to_text, looks_remote, to_iso
 from .http import get_json, post_json
 
 SEARCH_URL = "https://api.search.tinyfish.ai"
@@ -35,6 +35,7 @@ SITES: dict[str, tuple[str, re.Pattern]] = {
     "workatastartup.com": ("yc", re.compile(r"^https?://(?:www\.)?workatastartup\.com/jobs/(\d+)(?:$|[/?#])", re.I)),
 }
 
+GONE = re.compile(r"page[_ ]?not[_ ]?found|not[_ ]?found|\b404\b|\b410\b|gone", re.I)     # definitive: the URL no longer exists
 _DEAD = re.compile(
     r"no longer (?:accepting|available|open|hiring)|position (?:has been|is) (?:filled|closed)|"
     r"(?:job|posting|listing|role) (?:has been |is |was )?(?:closed|expired|removed|filled|unavailable)|"
@@ -118,6 +119,41 @@ def parse_search(data: dict) -> list[Job]:
     return out
 
 
+_ROLE_PAGE_RE = re.compile(r"^https?://(?:www\.)?wellfound\.com/(?:role|location)/", re.I)
+ROLE_PAGE_LIMIT = 10          # URLs per fetch request
+
+
+def job_links_from_page(result: dict) -> list[Job]:
+    """Preview Jobs for every individual Wellfound/YC posting linked from a fetched listing page (title from the URL slug)."""
+    links = set(result.get("links") or [])
+    links |= set(re.findall(r"\((https?://[^)\s]+)\)", result.get("text") or ""))
+    out: dict[str, Job] = {}
+    for link in sorted(links):
+        ident = identify(link)
+        if not ident or ident[0] != "wellfound":          # YC listing pages ignore filters (all return the same default list)
+            continue
+        source, ext_id, url = ident
+        slug = url.rsplit("/", 1)[-1]
+        title = re.sub(r"^\d+-", "", slug).replace("-", " ").strip().title()
+        if title and url not in out:
+            out[url] = Job(source=source, external_id=ext_id, title=title, company="Unknown", url=url, board=source, tags=[PREVIEW_TAG])
+    return list(out.values())
+
+
+async def harvest_role_pages(client, urls: list[str]) -> tuple[list[Job], int]:
+    """Fetch Wellfound role/listing pages and return the job postings they link to.  (jobs, pages_ok)"""
+    jobs: dict[str, Job] = {}
+    ok = 0
+    for i in range(0, len(urls), ROLE_PAGE_LIMIT):
+        chunk = urls[i : i + ROLE_PAGE_LIMIT]
+        data = await post_json(client, FETCH_URL, {"urls": chunk, "format": "markdown", "links": True}, headers=_headers())
+        for res in data.get("results", []):
+            ok += 1
+            for j in job_links_from_page(res):
+                jobs.setdefault(j.url, j)
+    return list(jobs.values()), ok
+
+
 async def search(client, query: str, page: int = 0) -> list[Job]:
     data = await get_json(client, SEARCH_URL, params={"query": query, "page": page}, headers=_headers())
     return parse_search(data)
@@ -139,10 +175,67 @@ def relative_to_iso(text: str, now: Optional[datetime] = None) -> Optional[str]:
     return (now - timedelta(days=days)).isoformat(timespec="seconds")
 
 
+_SECTION_LABELS = re.compile(
+    r"^(?:hires remotely in|job location|remote work policy|company location|visa sponsorship|relocation\w*|skills|preferred \w+|"
+    r"collaboration hours|about the job|actively hiring)\b", re.I)
+
+
 def _after(label: str, text: str) -> str:
-    """Value on the line(s) after a label such as 'Job Location' (Wellfound layout)."""
+    """Value on the line after a label such as 'Job Location' (Wellfound layout). An empty section (whose next
+    line is just another label) yields "", never that label."""
     m = re.search(rf"^\s*{re.escape(label)}\s*\n+\s*([^\n]+)", text, re.I | re.M)
-    return m.group(1).strip() if m else ""
+    if not m:
+        return ""
+    value = m.group(1).strip()
+    return "" if _SECTION_LABELS.match(value) else value
+
+
+_WF_SECTION_END = re.compile(r"^(?:#{2,}\s|posted\b|reposted\b|hires remotely in|job location|remote work policy|company location)", re.I)
+
+
+def _wf_header(text: str) -> dict:
+    """Wellfound's job header, e.g.
+         # Junior Full-Stack Developer
+         * $24k – $28k • No equity
+         * |Remote (
+           Everywhere
+           )
+         * |1 year of exp
+         * |Full Time
+       -> {"work_location": "Remote – Everywhere", "experience": "1 year of exp", "employment_type": "Full Time"} (keys only when found).
+    Line scanner (not one big regex): bullets can wrap across several lines."""
+    lines = text[:3500].splitlines()
+    start = next((i for i, l in enumerate(lines) if l.startswith("# ")), None)
+    if start is None:
+        return {}
+    bullets: list[str] = []
+    for line in lines[start + 1 :]:
+        stripped = line.strip()
+        if _WF_SECTION_END.match(stripped):
+            break
+        if line.startswith("* "):
+            bullets.append(stripped[2:])
+        elif bullets and stripped and line.startswith((" ", "\t")):
+            bullets[-1] += " " + stripped                     # indented continuation of a wrapped bullet
+        elif stripped and not bullets:
+            continue                                          # text before the first bullet (tagline, pay line on YC pages)
+        elif stripped:
+            break                                             # a normal paragraph after the bullets: the header is over
+    out: dict = {}
+    for b in bullets:
+        b = re.sub(r"\s+", " ", b).strip(" |•")
+        if not b:
+            continue
+        if re.match(r"(remote|onsite|hybrid)\b", b, re.I):
+            loc = re.sub(r"\s*\(\s*", " – ", b, count=1)
+            loc = re.sub(r"\s*\)\s*", " ", loc)
+            loc = re.sub(r"(?<=\s)[.·•|]+(?=\s|\w)|(?<=\w)[.·|]+(?=\s|$)", "", loc)   # decoration like "( . Everywhere. )"
+            out["work_location"] = re.sub(r"\s+", " ", loc).strip(" •–-.")
+        elif re.search(r"\b(?:years?|yrs?) of exp|no experience required", b, re.I):
+            out["experience"] = b
+        elif re.match(r"(full[- ]?time|part[- ]?time|contract|internship|intern)\b", b, re.I):
+            out["employment_type"] = b
+    return out
 
 
 def parse_detail(text: str) -> dict:
@@ -153,8 +246,19 @@ def parse_detail(text: str) -> dict:
     head = text[:2500]
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if lines:
-        info["company"] = re.sub(r"\s*[·•]\s*[WSFX]\d{2}$", "", lines[0]).strip()[:80]
-    loc = _after("Job Location", text)                                   # Wellfound
+        first = re.sub(r"\s*[·•]\s*[WSFX]\d{2}$", "", lines[0]).strip()
+        at = re.search(r"\bat\s+(.+?)\s*\([WSFX]\d{2}\)\s*$", first)           # YC: "# Role at Company(W21)"
+        if at:
+            info["company"] = at.group(1).strip()[:80]
+        elif not first.startswith("#"):                                           # Wellfound: the first line is the company
+            info["company"] = first[:80]
+    wf = _wf_header(text)
+    hires_in = _after("Hires remotely in", text)
+    loc = wf.get("work_location") or ""                                     # Wellfound: "Remote – Everywhere" / "Remote – India" / "Onsite …"
+    if loc.lower().startswith("remote") and loc.strip("– ").lower() == "remote" and hires_in:
+        loc = f"Remote – {hires_in}"
+    if not loc:
+        loc = _after("Job Location", text)                                  # Wellfound onsite jobs
     if not loc:
         m = re.search(r"^\s*Location:\s*(.+)$", text, re.I | re.M)         # YC, free-text layout
         loc = m.group(1).strip() if m else ""
@@ -162,17 +266,26 @@ def parse_detail(text: str) -> dict:
         m = re.search(r"^\s*Location(?![: ])\s*(.+)$", head, re.I | re.M)   # YC, "LocationNew Delhi, DL, IN"
         loc = m.group(1).strip() if m else ""
     yc_exp = ""
-    if not loc:
-        m = _YC_COMPACT.search(head)                                       # YC, "Pune, IndiaFull-time…3+ years"
+    if not loc and not wf.get("work_location"):                              # YC compact header (Wellfound pages always have a bullet header)
+        m = _YC_COMPACT.search(head)                                        # YC, "Pune, IndiaFull-time…3+ years"
         if m:
             loc = m.group("loc").strip(" /")
             em = _YC_EXP.search(m.group("rest"))
             yc_exp = em.group(1) if em else ""
-    info["location"] = loc[:160]
+    loc = re.sub(r"\s+", " ", loc).strip()
+    info["location"] = "" if re.fullmatch(r"[\W_]*", loc) else loc[:160]      # punctuation-only is not a location
+    if wf.get("experience"):
+        info["experience"] = wf["experience"]
+    if wf.get("employment_type"):
+        info["employment_type"] = wf["employment_type"]
     policy = _after("Remote Work Policy", text)
     info["remote_policy"] = policy
-    m = re.search(r"No experience required|\d+\+?\s*(?:[-–]\s*\d+\s*)?years? of experience", head, re.I)
-    if m:
+    m = re.search(r"No experience required|\d+\+?\s*(?:[-–]\s*\d+\s*)?(?:years?|yrs?) of (?:experience|exp)\b", head, re.I)
+    if info.get("experience"):
+        pass
+    elif yc_exp:                                                            # the YC header line beats sentences in the description
+        info["experience"] = yc_exp
+    elif m:
         info["experience"] = m.group(0)
     elif yc_exp:
         info["experience"] = yc_exp
@@ -181,7 +294,7 @@ def parse_detail(text: str) -> dict:
         if m:
             info["experience"] = m.group(1)
     m = re.search(r"(Internship|Full[- ]?time|Part[- ]?time|Contract)", head, re.I)
-    if m:
+    if m and not info.get("employment_type"):
         info["employment_type"] = m.group(1)
     m = re.search(r"Posted:\s*([^•\n]+)", head)
     if m:
@@ -216,6 +329,8 @@ def apply_detail(job: Job, info: dict) -> Job:
     if loc:
         job.location = loc
     if policy.startswith("remote"):
+        job.remote = True
+    elif looks_remote(loc):                                                 # YC has no separate policy field: "Remote (Worldwide)"
         job.remote = True
     if info.get("description"):
         exp = info.get("experience")
@@ -275,9 +390,11 @@ async def discover(
     max_fetch = int(cfg.get("max_fetch", 60))
     max_age_days = int(cfg.get("max_age_days", 90))
     counters = {"queries": len(queries), "found": 0, "new": 0, "fetched": 0, "dead": 0, "stale": 0,
-                "us_only": 0, "preview_only": 0, "search_errors": 0}
+                "us_only": 0, "preview_only": 0, "search_errors": 0, "city_label_ignored": 0,
+                "search_calls": 0, "paging_stopped": 0, "role_pages_ok": 0, "role_jobs": 0, "gone": 0}
 
     found: dict[str, Job] = {}
+    min_new = int(cfg.get("page_min_new", 2))       # keep paging a query only while a page still brings this many unseen jobs
     for q in queries:
         for page in range(pages):
             try:
@@ -290,15 +407,34 @@ async def discover(
                 break
             if not batch:
                 break
+            unseen = [j for j in batch if j.url not in known and j.url not in found]
             for j in batch:
                 found.setdefault(j.url, j)
+            counters["search_calls"] += 1
             await sleep(0.25)
+            if len(unseen) < min_new:                # this page was mostly things we already know: deeper pages won't be fresher
+                counters["paging_stopped"] += 1
+                break
+
+    role_pages = [u for u in cfg.get("role_pages", []) if _ROLE_PAGE_RE.match(u)]
+    if role_pages:
+        try:
+            listed, ok = await harvest_role_pages(client, role_pages)
+            counters["role_pages_ok"] = ok
+            counters["role_jobs"] = sum(1 for j in listed if j.url not in found)
+            for j in listed:
+                found.setdefault(j.url, j)
+        except Exception as e:
+            info.setdefault("errors", []).append(f"role pages: {type(e).__name__}: {e}")
     counters["found"] = len(found)
     info["seen_urls"] = list(found)
 
     # Keep only engineering-looking titles; known-good jobs are skipped (already have details).
     fresh = [j for j in found.values() if not known.get(j.url) and _title_ok(j, relevant)]
+    fresh.sort(key=fetch_priority)                                   # stable: promising ones first if the fetch cap bites
+    fresh = interleave_by_source(fresh)                              # ...but every source gets its fair share of the cap
     counters["new"] = len(fresh)
+    counters["city_label_ignored"] = sum(1 for j in fresh if j.location and not relevant(j))   # would have been dropped before this fix
     to_fetch, previews = fresh[:max_fetch], fresh[max_fetch:]
 
     out: list[Job] = []
@@ -314,8 +450,12 @@ async def discover(
         info.setdefault("processed", []).extend(ok)         # pages we successfully read (kept or not)
         for j in chunk:
             d = ok.get(j.url)
-            if d is None:                      # fetch failed (bot_blocked/timeout): keep as preview, retry next run
-                previews.append(j)
+            if d is None:
+                if GONE.search(errs.get(j.url, "")):      # the posting no longer exists: remember it, never fetch it again
+                    info.setdefault("processed", []).append(j.url)
+                    counters["gone"] += 1
+                else:                                     # bot_blocked / timeout: may work tomorrow, keep as preview
+                    previews.append(j)
                 continue
             if d.get("dead"):
                 counters["dead"] += 1
@@ -331,7 +471,7 @@ async def discover(
 
     # Previews are only worth keeping when the search result already told us the location is usable.
     for j in previews:
-        if j.location and looks_us_only(j) is False:
+        if j.location and relevant(j) and looks_us_only(j) is False:
             out.append(j)
             counters["preview_only"] += 1
     info.update(counters)
@@ -339,11 +479,39 @@ async def discover(
 
 
 def _title_ok(job: Job, relevant: Callable[[Job], bool]) -> bool:
-    """Lenient pre-filter: title must look like engineering; location is checked only if the search gave one."""
-    if job.location:
-        return relevant(job)
-    probe = Job(**{**job.__dict__, "location": "Remote"})      # unknown location: judge by title alone
+    """Pre-filter: is the TITLE engineering-like?  The location shown in a search result is deliberately ignored.
+
+    Wellfound labels results with the COMPANY's home city ("Junior Full-Stack Developer at Nexorlio • Las Vegas") even when the
+    job is "Remote only - Everywhere", so that label says nothing reliable about where the job can be done. The real location is
+    read from the posting itself after fetching (and jobs that turn out to be unusable are remembered, so they cost one fetch)."""
+    probe = Job(**{**job.__dict__, "location": "Remote"})
     return relevant(probe)
+
+
+_EARLY_CAREER = re.compile(r"\b(intern(?:ship)?|junior|jr\.?|graduate|new grad|fresher|entry[- ]level|associate|trainee|sde[- ]?(?:1|i)\b|engineer[- ]?(?:1|i)\b)", re.I)
+
+
+def interleave_by_source(jobs: list[Job]) -> list[Job]:
+    """Round-robin across sources, keeping each source's own (priority) order.  With one shared per-run fetch cap, a source with
+    hundreds of candidates (Wellfound + its listing pages) must not use the whole budget and starve the others (YC)."""
+    buckets: dict[str, list[Job]] = {}
+    for j in jobs:
+        buckets.setdefault(j.source, []).append(j)
+    order, out, i = list(buckets), [], 0
+    while any(buckets.values()):
+        for src in order:
+            if buckets[src]:
+                out.append(buckets[src].pop(0))
+    return out
+
+
+def fetch_priority(job: Job) -> int:
+    """Lower = fetch sooner, when the per-run cap means we can't fetch everything.
+       0: the search label already says India/remote      1: early-career title      2: everything else"""
+    from ..textutil import is_india, looks_remote     # local import: textutil is tiny and has no cycles
+    if is_india(job.location) or looks_remote(job.location):
+        return 0
+    return 1 if _EARLY_CAREER.search(job.title or "") else 2
 
 
 def _age_days(iso: str) -> float:

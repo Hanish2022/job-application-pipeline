@@ -1,10 +1,16 @@
 """Deterministic job <-> profile scoring (0-100) with human-readable reasons.
 
 score = skills (0-50) + role/title fit (0-25) + seniority fit (0-20) + location (0-5)
+
+The skills part rewards two different things so that scores spread out instead of piling up at 100:
+  depth     - how many of YOUR skills the job uses (1 - e^(-x/3): diminishing returns, never quite reaches 1)
+  coverage  - what share of the skills the JOB asks for you actually have (a job wanting 10 technologies you half-know
+              scores below one wanting 5 that you know well)
 Senior / staff / manager roles are capped so they never surface as strong matches for a fresher.
 """
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 
@@ -46,6 +52,7 @@ class Score:
     level: str
     matched: list[str]
     reasons: list[str]
+    parts: dict | None = None     # {"skills": (points, max), "role": ..., "level": ..., "location": ..., "cap": None | int}
 
 
 def _max_required_years(text: str) -> int | None:
@@ -113,15 +120,22 @@ def score_job(
 
     # --- skills -----------------------------------------------------------------
     matched: list[str] = []
-    gained = 0.0
+    gained = 0.0        # weighted strength of the skills we share (for depth)
+    hit = 0.0           # how much of what the job asks for we cover (for coverage)
+    total = 0.0         # everything the job asks for
     for skill in job_skills:
-        w = float(weights.get(skill, 1.0))
+        weight = 0.4 if skill in GENERIC else 1.0           # "git", "api", "html"... say little about fit
+        total += weight
         if skill in mine:
             matched.append(skill)
-            gained += w * (0.4 if skill in GENERIC else 1.0)
+            hit += weight
+            gained += float(weights.get(skill, 1.0)) * weight
         elif any(r in mine for r in RELATED.get(skill, [])):
+            hit += 0.5 * weight
             gained += 0.5
-    skill_pts = 50.0 * min(1.0, gained / 5.0)
+    depth = 1.0 - math.exp(-gained / 3.0)
+    coverage = (hit / total) if total else 0.0
+    skill_pts = 50.0 * (0.55 * depth + 0.45 * coverage)
     matched.sort(key=lambda s: (s in GENERIC, -weights.get(s, 1.0), s))
 
     # --- role / title fit -------------------------------------------------------
@@ -172,20 +186,27 @@ def score_job(
     total = skill_pts + role_pts + level_pts + loc_pts
 
     # --- gates ------------------------------------------------------------------
+    cap: int | None = None
     if not tech and not hits:
-        total = min(total, 20.0)
+        cap = 20
     if user_level == "entry":
         if level == "senior":
-            total = min(total, 25.0)
+            cap = 25 if cap is None else min(cap, 25)
         elif level == "mid":
-            total = min(total, 55.0)
+            cap = 55 if cap is None else min(cap, 55)
     low_title = title.lower()
     for bad in profile.get("exclude_keywords") or []:
         if bad and bad.lower() in low_title:
-            total = min(total, 5.0)
+            cap = 5
             reasons.append(f"Excluded keyword: {bad}")
             break
+    if cap is not None:
+        total = min(total, float(cap))
 
     if matched:
         reasons.insert(0, "Matches your skills: " + ", ".join(matched[:6]))
-    return Score(int(round(max(0.0, min(100.0, total)))), level, matched[:12], reasons[:5])
+    parts = {
+        "skills": (round(skill_pts, 1), 50), "role": (round(role_pts, 1), 25),
+        "level": (round(level_pts, 1), 20), "location": (round(loc_pts, 1), 5), "cap": cap,
+    }
+    return Score(int(round(max(0.0, min(100.0, total)))), level, matched[:12], reasons[:5], parts)

@@ -223,9 +223,10 @@
     },
     "tinyfish": {
       "enabled": true,
-      "note": "Wellfound + YC Work at a Startup via TinyFish search/fetch. Needs TINYFISH_API_KEY in .env. Edit queries freely.",
-      "pages": 2,
-      "max_fetch": 60,
+      "note": "Wellfound + YC Work at a Startup via TinyFish search/fetch. Needs TINYFISH_API_KEY in .env. Edit queries/role_pages freely; queries that mostly return postings you already have only cost calls.",
+      "pages": 3,
+      "page_min_new": 3,
+      "max_fetch": 80,
       "max_age_days": 90,
       "close_after_days": 21,
       "queries": [
@@ -234,8 +235,34 @@
         "site:wellfound.com/jobs \"associate software engineer\" OR SDE OR \"software developer\" India",
         "site:wellfound.com/jobs frontend OR backend developer India intern OR junior",
         "site:wellfound.com/jobs \"software engineer\" OR developer remote intern OR \"entry level\" OR junior",
+        "site:wellfound.com/jobs \"junior\" \"full stack\" remote",
+        "site:wellfound.com/jobs \"junior software engineer\" remote",
+        "site:wellfound.com/jobs \"entry level\" developer remote",
+        "site:wellfound.com/jobs developer \"no experience required\" remote",
+        "site:wellfound.com/jobs react junior remote",
+        "site:wellfound.com/jobs \"node.js\" junior remote",
+        "site:wellfound.com/jobs MERN stack developer",
+        "site:wellfound.com/jobs \"junior\" frontend remote",
+        "site:wellfound.com/jobs \"junior\" backend remote",
+        "site:wellfound.com/jobs \"associate software engineer\" India",
         "site:workatastartup.com/jobs \"software engineer\" India",
-        "site:workatastartup.com/jobs \"full stack\" OR frontend OR backend intern OR \"new grad\" OR junior India OR remote"
+        "site:workatastartup.com/jobs \"full stack\" OR frontend OR backend intern OR \"new grad\" OR junior India OR remote",
+        "site:workatastartup.com/jobs \"full stack\" junior OR \"entry level\" OR \"new grad\"",
+        "site:workatastartup.com/jobs frontend engineer remote",
+        "site:workatastartup.com/jobs backend engineer India"
+      ],
+      "role_pages": [
+        "https://wellfound.com/role/r/full-stack-developer",
+        "https://wellfound.com/role/r/full-stack-web-developer",
+        "https://wellfound.com/role/r/junior-software-engineer",
+        "https://wellfound.com/role/r/software-engineer",
+        "https://wellfound.com/role/r/frontend-developer",
+        "https://wellfound.com/role/r/backend-developer",
+        "https://wellfound.com/role/r/react-developer",
+        "https://wellfound.com/role/l/software-engineer/india",
+        "https://wellfound.com/role/l/full-stack-developer/india",
+        "https://wellfound.com/role/l/frontend-developer/india",
+        "https://wellfound.com/role/l/backend-developer/india"
       ]
     }
   }

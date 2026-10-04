@@ -11,11 +11,17 @@ const SOURCE_LABEL = {
   himalayas: "Himalayas", arbeitnow: "Arbeitnow", adzuna: "Adzuna",
   wellfound: "Wellfound", yc: "YC Work at a Startup",
 };
+const LEVEL_COLOR = { intern: "violet", entry: "green", mid: "yellow", senior: "red", unknown: "gray" };
+// Salary ranges (LPA). Ticking several = OR. Must match SALARY_BUCKETS in app/store.py.
+const SALARY_BUCKETS = [["0-5", "Under ₹5 LPA"], ["5-10", "₹5–10 LPA"], ["10-15", "₹10–15 LPA"], ["15-25", "₹15–25 LPA"],
+                        ["25-40", "₹25–40 LPA"], ["40-", "₹40 LPA and above"], ["none", "Not listed"]];
+const SALARY_RANGES = SALARY_BUCKETS.map(([k]) => k).filter((k) => k !== "none");
+const SALARY_LABEL = Object.fromEntries(SALARY_BUCKETS);
 const PAGE = 30;
-const DEFAULTS = { q: "", min: "50", level: [], loc: [], src: [], status: "", days: "", sort: "score", company: "", lpa: "" };
+const DEFAULTS = { q: "", min: "50", level: [], loc: [], src: [], status: "", days: "", sort: "score", company: "", lpa: [] };
 
 const state = {
-  f: { ...DEFAULTS, level: [], loc: [], src: [] },
+  f: { ...DEFAULTS, level: [], loc: [], src: [], lpa: [] },
   items: [], total: 0, loading: false, error: null, reqId: 0,
   stats: null, profile: null, sources: [],
   pollTimer: null, lastFocus: null,
@@ -42,6 +48,11 @@ const ICONS = {
   x: '<path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
   arrow: '<path d="M5 11l6-6M6 5h5v5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
   undo: '<path d="M6 4L3 7l3 3M3 7h6a4 4 0 0 1 0 8H7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
+  refresh: '<path d="M13.5 8a5.5 5.5 0 0 1-9.6 3.7M2.5 8a5.5 5.5 0 0 1 9.6-3.7M12.6 1.8v3H9.6M3.4 14.2v-3h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>',
+  briefcase: '<rect x="2" y="5" width="12" height="8.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M5.8 5V4a1 1 0 0 1 1-1h2.4a1 1 0 0 1 1 1v1M2 9h12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+  target: '<circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="8" cy="8" r="2.4" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 8l4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+  spark: '<path d="M8 1.8l1.5 3.7 3.7 1.5-3.7 1.5L8 12.2 6.5 8.5 2.8 7l3.7-1.5L8 1.8zM12.6 11l.6 1.4 1.4.6-1.4.6-.6 1.4-.6-1.4-1.4-.6 1.4-.6.6-1.4z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>',
+  send: '<path d="M14 2L7.2 8.8M14 2l-4.3 12-2.5-5.2L2 6.3 14 2z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>',
 };
 function icon(name) {
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -93,14 +104,25 @@ function toast(msg) {
 }
 
 /* ------------------------------------------------------------ filter <-> URL */
+// ?lpa=5-10,10-15,none.  Old bookmarks: ?lpa=listed (any salary) and ?lpa=15 ("15 LPA and above") are converted to ticks.
+function parseSalaryParam(raw) {
+  if (!raw) return [];
+  if (raw === "listed") return [...SALARY_RANGES];
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const min = Number(raw);
+    return SALARY_RANGES.filter((k) => { const hi = k.split("-")[1]; return !hi || Number(hi) > min; });
+  }
+  return raw.split(",").filter((k) => SALARY_LABEL[k] !== undefined);
+}
+
 function readUrl() {
   const p = new URLSearchParams(location.search);
   const list = (k) => (p.get(k) || "").split(",").filter(Boolean);
-  const f = { ...DEFAULTS, level: [], loc: [], src: [] };
+  const f = { ...DEFAULTS, level: [], loc: [], src: [], lpa: [] };
   if (p.has("q")) f.q = p.get("q");
   if (p.has("min")) f.min = String(parseInt(p.get("min"), 10) || 0);
   if (p.has("company")) f.company = p.get("company");
-  if (p.get("lpa") === "listed" || Number(p.get("lpa")) > 0) f.lpa = p.get("lpa");
+  f.lpa = parseSalaryParam(p.get("lpa"));
   f.level = list("level"); f.loc = list("loc"); f.src = list("src");
   if (["saved", "applied", "dismissed"].includes(p.get("status"))) f.status = p.get("status");
   if (["1", "7", "30"].includes(p.get("days"))) f.days = p.get("days");
@@ -113,7 +135,7 @@ function writeUrl() {
   if (f.q) p.set("q", f.q);
   if (f.min !== DEFAULTS.min) p.set("min", f.min);
   if (f.company) p.set("company", f.company);
-  if (f.lpa) p.set("lpa", f.lpa);
+  if (f.lpa.length) p.set("lpa", f.lpa.join(","));
   if (f.level.length) p.set("level", f.level.join(","));
   if (f.loc.length) p.set("loc", f.loc.join(","));
   if (f.src.length) p.set("src", f.src.join(","));
@@ -129,8 +151,7 @@ function queryString(offset = 0) {
   if (f.q) p.set("q", f.q);
   if (f.min && f.min !== "0") p.set("min_score", f.min);
   if (f.company) p.set("company", f.company);
-  if (f.lpa === "listed") p.set("has_salary", "true");
-  else if (f.lpa) p.set("min_lpa", f.lpa);
+  if (f.lpa.length) p.set("salary", f.lpa.join(","));
   if (f.level.length) p.set("level", f.level.join(","));
   if (f.loc.length) p.set("location", f.loc.join(","));
   if (f.src.length) p.set("source", f.src.join(","));
@@ -146,13 +167,36 @@ function syncControls() {
   $("#q").value = f.q;
   $("#f-company").value = f.company;
   $("#f-days").value = f.days;
-  $("#f-lpa").value = f.lpa;
+  $$("#f-salary input").forEach((i) => { i.checked = f.lpa.includes(i.value); });
   $("#sort").value = f.sort;
   $$("#f-score .seg__btn").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.value === f.min)));
   $$("#f-level input").forEach((i) => { i.checked = f.level.includes(i.value); });
   $$("#f-location input").forEach((i) => { i.checked = f.loc.includes(i.value); });
   $$("#f-source input").forEach((i) => { i.checked = f.src.includes(i.value); });
   $$("#status-tabs .tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.value === f.status)));
+  positionThumb();
+}
+
+function buildSalaryFilter() {
+  const box = $("#f-salary");
+  const counts = state.stats && state.stats.salary_buckets ? state.stats.salary_buckets : {};
+  if (box.children.length) {                                   // already built: only refresh the counts (keeps keyboard focus)
+    for (const [token] of SALARY_BUCKETS) {
+      const n = $(`[data-testid="salary-count-${token}"]`, box);
+      if (n) n.textContent = counts[token] == null ? "" : String(counts[token]);
+    }
+    return;
+  }
+  for (const [token, label] of SALARY_BUCKETS) {
+    const input = el("input", { type: "checkbox", value: token });
+    input.checked = state.f.lpa.includes(token);
+    input.addEventListener("change", () => { toggleIn(state.f.lpa, token, input.checked); refresh(); });
+    const labelId = `sal-${token}`, countId = `sal-n-${token}`;
+    input.setAttribute("aria-labelledby", labelId);                        // name = the range only ("₹10–15 LPA")...
+    input.setAttribute("aria-describedby", countId);                       // ...the count is extra information, read after it
+    box.append(el("label", { class: "check" }, input, el("span", { id: labelId, text: label }),
+      el("span", { class: "n", id: countId, "data-testid": `salary-count-${token}`, text: counts[token] == null ? "" : String(counts[token]) })));
+  }
 }
 
 function buildSourceFilter() {
@@ -164,7 +208,7 @@ function buildSourceFilter() {
     input.addEventListener("change", () => {
       toggleIn(state.f.src, name, input.checked); refresh();
     });
-    box.append(el("label", { class: "check" }, input, el("span", { text: SOURCE_LABEL[name] || name }), el("span", { class: "n", text: String(n) })));
+    box.append(el("label", { class: "check" }, input, el("i", { class: "dot", "data-src": name, "aria-hidden": "true" }), el("span", { text: SOURCE_LABEL[name] || name }), el("span", { class: "n", text: String(n) })));
   }
 }
 
@@ -172,6 +216,13 @@ function toggleIn(arr, value, on) {
   const i = arr.indexOf(value);
   if (on && i < 0) arr.push(value);
   if (!on && i >= 0) arr.splice(i, 1);
+}
+
+function positionThumb() {
+  const box = $("#status-tabs"), thumb = box && $(".tabs__thumb", box), sel = box && $('.tab[aria-selected="true"]', box);
+  if (!thumb || !sel || !sel.offsetWidth) return;
+  thumb.style.width = `${sel.offsetWidth}px`;
+  thumb.style.transform = `translateX(${sel.offsetLeft}px)`;
 }
 
 function renderChips() {
@@ -185,7 +236,7 @@ function renderChips() {
   if (f.q) add(`“${f.q}”`, () => { f.q = ""; });
   if (f.min !== "0") add(`Match ≥ ${f.min}`, () => { f.min = "0"; });
   if (f.company) add(`Company: ${f.company}`, () => { f.company = ""; });
-  if (f.lpa) add(f.lpa === "listed" ? "Salary listed" : `₹${f.lpa} LPA+`, () => { f.lpa = ""; });
+  f.lpa.forEach((v) => add(SALARY_LABEL[v] || v, () => toggleIn(f.lpa, v, false)));
   f.level.forEach((v) => add(LEVEL_LABEL[v] || v, () => toggleIn(f.level, v, false)));
   f.loc.forEach((v) => add(v === "india" ? "India" : "Remote", () => toggleIn(f.loc, v, false)));
   f.src.forEach((v) => add(SOURCE_LABEL[v] || v, () => toggleIn(f.src, v, false)));
@@ -193,8 +244,11 @@ function renderChips() {
 }
 
 /* --------------------------------------------------------------- rendering */
-function statCard(label, value) {
-  return el("div", { class: "stat" }, el("dt", { text: label }), el("dd", { text: String(value) }));
+function statCard(label, value, iconName, colour) {
+  const tile = el("span", { class: `stat__icon c-${colour}`, "aria-hidden": "true" });
+  const svg = icon(iconName); svg.setAttribute("focusable", "false");
+  tile.append(svg);
+  return el("div", { class: "stat" }, el("dt", {}, tile, label), el("dd", { text: String(value) }));
 }
 
 function renderStats() {
@@ -202,27 +256,40 @@ function renderStats() {
   box.replaceChildren();
   if (!s) return;
   box.append(
-    statCard("Open jobs tracked", s.total.toLocaleString()),
-    statCard("Strong matches (60+)", s.strong_matches.toLocaleString()),
-    statCard("New in last 24h", s.new_last_24h.toLocaleString()),
-    statCard("Applied", (s.by_status.applied || 0).toLocaleString()),
+    statCard("Open jobs tracked", s.total.toLocaleString(), "briefcase", "violet"),
+    statCard("Strong matches (60+)", s.strong_matches.toLocaleString(), "target", "green"),
+    statCard("New in last 24h", s.new_last_24h.toLocaleString(), "spark", "blue"),
+    statCard("Applied", (s.by_status.applied || 0).toLocaleString(), "send", "orange"),
   );
   for (const k of ["saved", "applied", "dismissed"]) {
     const n = s.by_status[k] || 0;
     $(`[data-count="${k}"]`).textContent = n ? String(n) : "";
   }
   $("#salary-hint").textContent = s.total
-    ? `${s.with_salary.toLocaleString()} of ${s.total.toLocaleString()} jobs list a salary. Jobs without one are hidden when you pick a minimum.`
+    ? `${s.with_salary.toLocaleString()} of ${s.total.toLocaleString()} jobs list a salary. Tick several ranges to see any of them; jobs without a salary only show if you tick “Not listed” (or tick nothing).`
     : "";
+  buildSalaryFilter();
   const lr = s.last_run;
   const meta = $("#run-meta");
-  if (s.crawling) meta.textContent = "Crawling sources…";
-  else if (lr && lr.finished_at) meta.textContent = `Last refreshed ${timeAgo(lr.finished_at)}`;
-  else meta.textContent = "Never refreshed";
+  if (s.crawling) { meta.textContent = "Crawling sources…"; meta.dataset.state = "busy"; }
+  else if (lr && lr.finished_at) {
+    meta.textContent = `Last refreshed ${timeAgo(lr.finished_at)}`;
+    const hours = (Date.now() - Date.parse(lr.finished_at)) / 3.6e6;
+    meta.dataset.state = lr.status !== "ok" ? "stale" : hours < 26 ? "fresh" : "stale";
+  } else { meta.textContent = "Never refreshed"; meta.dataset.state = "never"; }
+  positionThumb();
+}
+
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return "";
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : "")).toUpperCase();
 }
 
 function renderHero() {
   const p = state.profile;
+  const av = $("#avatar");
+  if (av) av.textContent = initials(p && p.name) || "·";
   if (!p) {
     $("#greeting").textContent = "Jobs for you";
     $("#hero-sub").textContent = "Upload your resume in Profile to start matching.";
@@ -243,7 +310,26 @@ function salaryEl(job) {
   return el("span", { class: "salary", "data-testid": "salary", title, text: job.salary_lpa });
 }
 
-function scoreClass(n) { return n >= 75 ? "score--high" : n < 50 ? "score--low" : ""; }
+const PART_LABEL = { skills: "Skills", role: "Role fit", level: "Seniority", location: "Location" };
+function breakdownEl(b) {
+  const box = el("div", { class: "breakdown", "data-testid": "breakdown" });
+  for (const key of ["skills", "role", "level", "location"]) {
+    const part = b.parts[key];
+    if (!part) continue;
+    const pct = part.max ? Math.round((part.points / part.max) * 100) : 0;
+    const colour = pct >= 80 ? "green" : pct >= 50 ? "blue" : pct >= 25 ? "yellow" : "gray";
+    box.append(el("div", { class: "breakdown__row", "data-part": key },
+      el("span", { text: PART_LABEL[key] }),
+      el("span", { class: `breakdown__bar c-${colour}`, role: "img", "aria-label": `${PART_LABEL[key]}: ${part.points} of ${part.max} points` }, el("i", { style: `width:${pct}%` })),
+      el("span", { class: "breakdown__val", text: `${part.points} / ${part.max}` })));
+  }
+  const wrap = el("div", {}, box);
+  if (b.cap != null) wrap.append(el("p", { class: "breakdown__cap", "data-testid": "score-cap",
+    text: `Capped at ${b.cap}: the job's seniority or type is a poor fit for your profile, however well the skills match.` }));
+  return wrap;
+}
+
+function scoreColor(n) { return n >= 80 ? "green" : n >= 60 ? "blue" : n >= 40 ? "yellow" : "gray"; }
 
 function renderJob(job) {
   const url = safeUrl(job.url);
@@ -252,11 +338,11 @@ function renderJob(job) {
     : el("span", { class: "muted small", text: "No link" });
 
   const saved = job.status === "saved";
-  const saveBtn = el("button", { class: "icon-btn", type: "button", "aria-pressed": String(saved), "aria-label": saved ? `Unsave ${job.title}` : `Save ${job.title}`, title: saved ? "Unsave" : "Save", "data-testid": "save", onclick: () => setStatus(job, saved ? "new" : "saved") }, icon("bookmark"));
+  const saveBtn = el("button", { class: "icon-btn", "data-kind": "save", type: "button", "aria-pressed": String(saved), "aria-label": saved ? `Unsave ${job.title}` : `Save ${job.title}`, title: saved ? "Unsave" : "Save", "data-testid": "save", onclick: () => setStatus(job, saved ? "new" : "saved") }, icon("bookmark"));
   const dismissed = job.status === "dismissed";
-  const dismissBtn = el("button", { class: "icon-btn", type: "button", "aria-label": dismissed ? `Restore ${job.title}` : `Dismiss ${job.title}`, title: dismissed ? "Restore" : "Dismiss", "data-testid": "dismiss", onclick: () => setStatus(job, dismissed ? "new" : "dismissed") }, icon(dismissed ? "undo" : "x"));
+  const dismissBtn = el("button", { class: "icon-btn", "data-kind": "dismiss", type: "button", "aria-label": dismissed ? `Restore ${job.title}` : `Dismiss ${job.title}`, title: dismissed ? "Restore" : "Dismiss", "data-testid": "dismiss", onclick: () => setStatus(job, dismissed ? "new" : "dismissed") }, icon(dismissed ? "undo" : "x"));
   const applied = job.status === "applied";
-  const appliedBtn = el("button", { class: "icon-btn", type: "button", "aria-pressed": String(applied), "aria-label": applied ? `Unmark applied: ${job.title}` : `Mark as applied: ${job.title}`, title: applied ? "Unmark applied" : "Mark applied", "data-testid": "mark-applied", onclick: () => setStatus(job, applied ? "new" : "applied") }, icon("check"));
+  const appliedBtn = el("button", { class: "icon-btn", "data-kind": "applied", type: "button", "aria-pressed": String(applied), "aria-label": applied ? `Unmark applied: ${job.title}` : `Mark as applied: ${job.title}`, title: applied ? "Unmark applied" : "Mark applied", "data-testid": "mark-applied", onclick: () => setStatus(job, applied ? "new" : "applied") }, icon("check"));
 
   const meta = el("div", { class: "job__meta" },
     el("span", { text: job.company }),
@@ -264,17 +350,23 @@ function renderJob(job) {
     timeAgo(job.posted_at || job.first_seen) ? el("span", { text: timeAgo(job.posted_at || job.first_seen) }) : null,
     salaryEl(job),
   );
+  const lvlColour = LEVEL_COLOR[job.level] || "gray";
   const tags = el("div", { class: "job__tags" },
-    el("span", { class: "badge badge--level", text: LEVEL_LABEL[job.level] || job.level }),
-    applied ? el("span", { class: "badge badge--applied", text: "Applied" }) : null,
-    (job.matched || []).slice(0, 4).map((m) => el("span", { class: "badge", text: m })),
-    (job.tags || []).includes("via-search") ? el("span", { class: "badge badge--preview", title: "Found through search; open the posting to confirm details and that it is still open", text: "Preview" }) : null,
-    el("span", { class: "badge badge--src", text: SOURCE_LABEL[job.source] || job.source }),
+    el("span", { class: `tag c-${lvlColour} badge--level`, title: "Seniority inferred from the title and description" },
+      el("i", { class: `dot c-${lvlColour}`, "aria-hidden": "true" }), LEVEL_LABEL[job.level] || job.level),
+    job.remote ? el("span", { class: "tag c-blue badge--remote", title: "Can be done remotely from India" }, "Remote") : null,
+    job.status === "saved" ? el("span", { class: "tag c-blue badge--saved" }, "Saved") : null,
+    applied ? el("span", { class: "tag c-green badge--applied" }, "Applied") : null,
+    (job.matched || []).slice(0, 4).map((m) => el("span", { class: "skill", text: m })),
+    (job.tags || []).includes("via-search") ? el("span", { class: "tag tag--dashed c-yellow badge--preview", title: "Found through search; open the posting to confirm details and that it is still open", text: "Preview" }) : null,
+    el("span", { class: "tag tag--src badge--src" }, el("i", { class: "dot", "data-src": job.source, "aria-hidden": "true" }), SOURCE_LABEL[job.source] || job.source),
   );
   const titleBtn = el("button", { class: "job__title", type: "button", "data-testid": "job-title", onclick: () => openJob(job.id) }, job.title);
 
   return el("li", { class: "job", "data-id": job.id, "data-status": job.status, "data-testid": "job" },
-    el("div", { class: `score ${scoreClass(job.score)}`, title: "Match score", "aria-label": `Match score ${job.score} out of 100`, "data-testid": "score" }, String(job.score), el("small", { text: "match" })),
+    el("div", { class: "scorebox", title: `Match score ${job.score} out of 100: how well this job fits your resume. Open the job to see how it is made.` },
+      el("div", { class: `score score--${scoreColor(job.score)}`, style: `--p:${Math.max(0, Math.min(100, job.score))}`, "aria-label": `Match score ${job.score} out of 100`, "data-testid": "score" }, String(job.score)),
+      el("span", { class: "scorebox__label", "aria-hidden": "true", text: "match" })),
     el("div", { class: "job__main" }, titleBtn, meta, tags),
     el("div", { class: "job__actions" }, applyBtn, saveBtn, appliedBtn, dismissBtn),
   );
@@ -301,7 +393,7 @@ function renderList() {
     return;
   }
   if (!state.items.length) {
-    const hasFilters = JSON.stringify(state.f) !== JSON.stringify({ ...DEFAULTS, level: [], loc: [], src: [] });
+    const hasFilters = JSON.stringify(state.f) !== JSON.stringify({ ...DEFAULTS, level: [], loc: [], src: [], lpa: [] });
     stateBox.hidden = false; stateBox.replaceChildren(
       el("h3", { text: state.stats && state.stats.total === 0 ? "No jobs yet" : "No jobs match these filters" }),
       el("p", { text: state.stats && state.stats.total === 0 ? "Run a refresh to crawl the job boards and rank them against your resume." : "Try lowering the match score or removing a filter." }),
@@ -354,7 +446,7 @@ function refresh() {
 }
 
 function resetFilters() {
-  state.f = { ...DEFAULTS, level: [], loc: [], src: [] };
+  state.f = { ...DEFAULTS, level: [], loc: [], src: [], lpa: [] };
   refresh();
 }
 
@@ -366,11 +458,11 @@ async function setStatus(job, status) {
     // The drawer holds its own copy of the job; keep the list row in sync too.
     const listed = state.items.find((j) => j.id === job.id);
     if (listed) listed.status = status;
-    const labels = { saved: "Saved", applied: "Marked as applied", dismissed: "Dismissed", new: "Restored" };
+    const labels = { saved: "Saved", applied: "Marked as applied (moved to the Applied tab)", dismissed: "Dismissed", new: "Restored" };
     toast(`${labels[status]} — ${job.title}`);
     // Jobs that no longer belong in the current tab disappear from the list.
     const tab = state.f.status;
-    const stays = tab ? status === tab : status !== "dismissed";
+    const stays = tab ? status === tab : status === "new" || status === "saved";      // Active = new + saved
     if (!stays) {
       state.items = state.items.filter((j) => j.id !== job.id);
       state.total = Math.max(0, state.total - 1);
@@ -403,9 +495,9 @@ async function startCrawl() {
 function setCrawling(on) {
   const btn = $("#refresh");
   btn.disabled = on;
-  btn.replaceChildren(...(on ? [el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { class: "btn__label", text: "Crawling…" })] : [el("span", { class: "btn__label", text: "Refresh jobs" })]));
+  btn.replaceChildren(...(on ? [el("span", { class: "spinner", "aria-hidden": "true" }), el("span", { class: "btn__label", text: "Crawling…" })] : [icon("refresh"), el("span", { class: "btn__label", text: "Refresh jobs" })]));
   btn.setAttribute("aria-busy", String(on));
-  if (on) $("#run-meta").textContent = "Crawling sources…";
+  if (on) { $("#run-meta").textContent = "Crawling sources…"; $("#run-meta").dataset.state = "busy"; }
 }
 
 function pollCrawl() {
@@ -464,9 +556,10 @@ async function openJob(id, { keepFocus = false } = {}) {
     $("#job-title").textContent = job.title;
     const body = $("#job-body"); body.replaceChildren();
     const facts = el("dl", { class: "kv" });
-    const row = (k, v) => { if (v) facts.append(el("dt", { text: k }), el("dd", { text: v })); };
+    const row = (k, v) => { if (v) facts.append(el("dt", { text: k }), el("dd", {}, v)); };
     row("Match", `${job.score} / 100`);
-    row("Level", LEVEL_LABEL[job.level] || job.level);
+    const lc = LEVEL_COLOR[job.level] || "gray";
+    row("Level", el("span", { class: `tag c-${lc}` }, el("i", { class: `dot c-${lc}`, "aria-hidden": "true" }), LEVEL_LABEL[job.level] || job.level));
     row("Location", job.location + (job.remote ? " · remote-eligible" : ""));
     row("Posted", job.posted_at ? `${timeAgo(job.posted_at)} (${job.posted_at.slice(0, 10)})` : `first seen ${timeAgo(job.first_seen)}`);
     row("Team", job.department);
@@ -474,8 +567,9 @@ async function openJob(id, { keepFocus = false } = {}) {
     row("Salary", job.salary_lpa ? `${job.salary_lpa}${job.salary_converted ? `  (listed as ${job.salary}; converted at approximate rates)` : ""}` : "Not listed");
     row("Source", SOURCE_LABEL[job.source] || job.source);
     body.append(facts);
+    if (job.breakdown) body.append(el("h3", { class: "section-title", text: "How the score is made" }), breakdownEl(job.breakdown));
     if (job.reasons.length) body.append(el("h3", { class: "section-title", text: "Why it matches" }), el("ul", { class: "why" }, job.reasons.map((r) => el("li", { text: r }))));
-    if (job.matched.length) body.append(el("div", { class: "job__tags", style: "margin:12px 0 0" }, job.matched.map((m) => el("span", { class: "badge", text: m }))));
+    if (job.matched.length) body.append(el("div", { class: "job__tags", style: "margin:12px 0 0" }, job.matched.map((m) => el("span", { class: "skill", text: m }))));
     body.append(el("h3", { class: "section-title", text: "Description" }), el("div", { class: "desc", "data-testid": "job-desc", text: job.description || "No description provided — open the posting for details." }));
 
     const foot = $("#job-foot"); foot.replaceChildren();
@@ -498,7 +592,7 @@ function renderTags(boxId, list, labelPrefix) {
   list.forEach((t, i) => {
     const btn = el("button", { type: "button", "aria-label": `Remove ${labelPrefix} ${t}`, onclick: () => { list.splice(i, 1); renderTags(boxId, list, labelPrefix); } });
     btn.append(icon("x"));
-    box.append(el("span", { class: "tag", "data-testid": "tag" }, t, btn));
+    box.append(el("span", { class: "chip-tag", "data-testid": "tag" }, t, btn));
   });
 }
 
@@ -563,7 +657,7 @@ function wire() {
   $("#q").addEventListener("input", debounce((e) => { state.f.q = e.target.value.trim(); refresh(); }, 250));
   $("#f-company").addEventListener("input", debounce((e) => { state.f.company = e.target.value.trim(); refresh(); }, 250));
   $("#f-days").addEventListener("change", (e) => { state.f.days = e.target.value; refresh(); });
-  $("#f-lpa").addEventListener("change", (e) => { state.f.lpa = e.target.value; refresh(); });
+  $("#salary-all").addEventListener("click", () => { state.f.lpa = [...SALARY_RANGES]; refresh(); });
   $("#sort").addEventListener("change", (e) => { state.f.sort = e.target.value; refresh(); });
   $$("#f-score .seg__btn").forEach((b) => b.addEventListener("click", () => { state.f.min = b.dataset.value; refresh(); }));
   $$("#f-level input").forEach((i) => i.addEventListener("change", () => { toggleIn(state.f.level, i.value, i.checked); refresh(); }));
@@ -587,7 +681,11 @@ function wire() {
 }
 
 async function init() {
-  readUrl(); wire(); syncControls(); renderChips(); renderList();
+  readUrl(); buildSalaryFilter(); wire(); syncControls(); renderChips(); renderList();
+  const tabs = $("#status-tabs");
+  if ("ResizeObserver" in window && tabs) new ResizeObserver(positionThumb).observe(tabs);   // counts change the tab widths
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(positionThumb);
+  requestAnimationFrame(() => requestAnimationFrame(() => { positionThumb(); tabs && tabs.classList.add("is-ready"); }));
   await Promise.all([loadStats(), loadProfile()]);
   syncControls();
   loadJobs();

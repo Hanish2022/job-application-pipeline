@@ -4,21 +4,23 @@ NOTE: this is a single-user, local tool. It has NO authentication, so it binds t
 default. Don't expose it to a network without putting auth in front of it."""
 from __future__ import annotations
 
+import json
 import tempfile
+from html import escape
 import threading
 from pathlib import Path
 from typing import Callable, Literal, Optional
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import config
+from . import assets, config, outreach, shell
 from .feed import refresh
+from .matcher import score_job
 from .pipeline import PipelineBusy, ensure_profile, rescore
 from .resume import ResumeError, profile_from_file
-from .store import VALID_STATUSES, Store
+from .store import VALID_STATUSES, Store, parse_salary_tokens
 
 Level = Literal["intern", "entry", "mid", "senior", "unknown"]
 Status = Literal["new", "saved", "applied", "dismissed"]
@@ -53,11 +55,29 @@ def _csv(value: Optional[str]) -> list[str]:
     return [v.strip() for v in value.split(",") if v.strip()] if value else []
 
 
+def _breakdown_for(store: Store, job: dict) -> Optional[dict]:
+    """Where a job's score comes from, recomputed with the saved profile (same inputs as the stored score)."""
+    profile = store.load_profile()
+    if not profile:
+        return None
+    s = score_job(job["title"], job["description"], is_india=job["is_india"], remote=job["remote"], profile=profile,
+                  tags=json.dumps(job["tags"]), department=job["department"])
+    parts = {k: {"points": v[0], "max": v[1]} for k, v in s.parts.items() if k != "cap"}
+    return {"parts": parts, "cap": s.parts["cap"], "total": s.score}
+
+
 def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store], dict]] = None) -> FastAPI:
     """`crawler` lets tests swap the network crawl for a fake."""
     store = store or Store()
     crawler = crawler or (lambda s: refresh(s))
     app = FastAPI(title="Jobs Pipeline", version="1.0")
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        return response
     state = {"thread": None, "lock": threading.Lock(), "error": None}
 
     # ------------------------------------------------------------------- jobs
@@ -73,6 +93,7 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
         days: Optional[int] = Query(None, ge=1, le=365),
         min_lpa: Optional[float] = Query(None, ge=0, le=1000, description="Advertised salary range must reach this many LPA"),
         has_salary: bool = False,
+        salary: Optional[str] = Query(None, max_length=200, description="Comma-separated salary ranges in LPA, OR-ed: 5-10,10-15,40-,none"),
         sort: Literal["score", "newest", "company", "salary"] = "score",
         limit: int = Query(30, ge=1, le=200),
         offset: int = Query(0, ge=0),
@@ -84,9 +105,13 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
             raise HTTPException(422, "invalid location")
         if any(s not in VALID_STATUSES for s in statuses):
             raise HTTPException(422, "invalid status")
+        try:
+            salary_tokens = parse_salary_tokens(_csv(salary))
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
         return store.query_jobs(
             q=q, min_score=min_score, levels=levels, locations=locs, sources=_csv(source),
-            statuses=statuses, company=company, posted_within_days=days, min_lpa=min_lpa, has_salary=has_salary, sort=sort, limit=limit, offset=offset,
+            statuses=statuses, company=company, posted_within_days=days, min_lpa=min_lpa, has_salary=has_salary, salary=salary_tokens, sort=sort, limit=limit, offset=offset,
         )
 
     @app.get("/api/jobs/{job_id}")
@@ -95,6 +120,7 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
         if not job:
             raise HTTPException(404, "job not found")
         job.pop("fingerprint", None)
+        job["breakdown"] = _breakdown_for(store, job)
         return job
 
     @app.post("/api/jobs/{job_id}/status")
@@ -198,12 +224,31 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
     def health():
         return {"ok": True}
 
+    # ------------------------------------------------- cold email (vendored yc-outreach)
+    @app.get("/outreach", include_in_schema=False)
+    def outreach_page():
+        """The third-party yc-outreach UI, unmodified, inside our navbar/theme. See app/outreach.py."""
+        try:
+            page = outreach.render_page()
+        except (OSError, RuntimeError) as e:
+            raise HTTPException(503, f"Cold email page unavailable: {e}") from e
+        return HTMLResponse(assets.finalize(page), headers={"Content-Security-Policy": outreach.CSP, "Cache-Control": "no-cache"})
+
+    @app.get("/api/yc")
+    def outreach_api(request: Request):
+        """Same JSON API the vendored UI expects (batches / companies / founders). Blocks 5-10 s, so it runs in the threadpool."""
+        status, body, cache = outreach.run_route(request.url.query)
+        headers = {"Cache-Control": f"private, max-age={cache}"} if cache else {"Cache-Control": "no-store"}
+        return JSONResponse(body, status_code=status, headers=headers)
+
     # ----------------------------------------------------------------- static
     @app.get("/", include_in_schema=False)
     def index():
-        return FileResponse(config.STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+        page = (config.STATIC_DIR / "index.html").read_text(encoding="utf-8").replace("<!--SHELL_NAV-->", shell.nav_html("jobs"), 1)
+        page = page.replace("__APP_NAME__", escape(config.APP_NAME))
+        return HTMLResponse(assets.finalize(page), headers={"Cache-Control": "no-cache"})
 
-    app.mount("/static", StaticFiles(directory=config.STATIC_DIR), name="static")
+    app.mount("/static", assets.NoCacheStaticFiles(directory=config.STATIC_DIR), name="static")
     return app
 
 

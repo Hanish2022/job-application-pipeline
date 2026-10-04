@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 import uvicorn  # noqa: E402
 
+from app import outreach  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Job  # noqa: E402
 from app.pipeline import rescore  # noqa: E402
@@ -68,8 +69,48 @@ def make_crawler(port: int):
     return crawler
 
 
+def fake_yc_network() -> None:
+    """Replace the vendored yc-outreach module's network with in-memory YC / Algolia / company-site responses."""
+    import html as h
+    import json
+
+    vendor = outreach.load_vendor()
+    batches = {"Winter 2024": 26, "Summer 2025": 2, "Unspecified": 1}
+
+    def company(i: int) -> dict:
+        name = "Evil<img src=x onerror=window.__xss=1>" if i == 0 else f"Co{i:02d}"
+        return {"name": name, "slug": f"co{i}", "batch": "Winter 2024", "website": f"https://co{i}.example",
+                "one_liner": f"Builds thing {i}.", "subindustry": "B2B", "team_size": 3, "launched_at": 1000 - i}
+
+    def page(i: int) -> dict:
+        return {"props": {"company": {"website": f"https://co{i}.example", "linkedin_url": "", "twitter_url": "",
+                "founders": [{"full_name": f"Alice Founder{i}", "title": "CEO", "linkedin_url": "javascript:alert(1)" if i == 0 else "https://linkedin.com/in/alice",
+                              "twitter_url": ""}]}}}
+
+    def fake_get(url, timeout=8, data=None, headers=None):
+        if url == "https://www.ycombinator.com/companies":
+            return 'window.AlgoliaOpts = {"app":"APP","key":"KEY"}'
+        if "algolia" in url:
+            params = json.loads(data)["params"]
+            if "facets" in params:
+                return json.dumps({"facets": {"batch": batches}})
+            if "Winter%202024" in params or "Winter+2024" in params:
+                return json.dumps({"hits": [company(i) for i in range(26)], "nbPages": 1})
+            return json.dumps({"hits": [dict(company(100 + i), batch="Summer 2025") for i in range(2)], "nbPages": 1})
+        if url.startswith("https://www.ycombinator.com/companies/co"):
+            return f'<div data-page="{h.escape(json.dumps(page(int(url.rsplit("/co", 1)[1]))))}"></div>'
+        if url.startswith("https://co1.example"):
+            return "Contact us: alice@co1.example or hello@co1.example"      # one company lists real addresses
+        return None
+
+    vendor.get = fake_get
+    vendor._algolia = None
+    vendor.resolves = lambda domain: True
+
+
 if __name__ == "__main__":
     db, port = sys.argv[1], int(sys.argv[2])
     store = Store(db)
     seed(store, port)
+    fake_yc_network()
     uvicorn.run(create_app(store, crawler=make_crawler(port)), host="127.0.0.1", port=port, log_level="warning")

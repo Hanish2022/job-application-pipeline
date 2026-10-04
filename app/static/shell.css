@@ -1,0 +1,111 @@
+/* Design tokens follow DESIGN.md (Linear): near-black canvas, surface ladder, hairlines, one brand lavender for the
+   logo / primary button / focus / active-nav marker.  The semantic colour-tag system below follows Raycast's DESIGN.md
+   (saturated accent + its 15% tint) and is used only for *meaning* (level, score, status, email confidence), never decoration.
+   Every tag text colour is contrast-tested (>= 4.5:1 on its own tint over each surface) in tests/test_design_tokens.py. */
+:root {
+  --canvas: #010102;
+  --surface-1: #0f1011;
+  --surface-2: #141516;
+  --surface-3: #18191a;
+  --surface-4: #191a1b;
+  --hairline: #23252a;
+  --hairline-strong: #34343a;
+  --ink: #f7f8f8;
+  --ink-muted: #d0d6e0;
+  --ink-subtle: #8a8f98;
+  --ink-tertiary: #62666d;
+  --primary: #5e6ad2;
+  --primary-hover: #828fff;
+  --primary-focus: #5e69d1;
+  --success: #27a644;
+
+  /* semantic colours, as "r, g, b" so one value can be used solid or as a tint: rgb(var(--x-rgb)) / rgba(var(--x-rgb), .15) */
+  --blue-rgb: 87, 193, 255;
+  --green-rgb: 89, 212, 153;
+  --yellow-rgb: 255, 197, 51;
+  --red-rgb: 255, 97, 97;
+  --violet-rgb: 154, 163, 255;
+  --orange-rgb: 255, 154, 87;
+  --pink-rgb: 255, 122, 184;
+  --teal-rgb: 79, 209, 197;
+  --gray-rgb: 163, 168, 177;
+
+  --r-xs: 4px; --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-xl: 16px; --r-pill: 9999px;
+  --font: "Inter", "SF Pro Display", -apple-system, system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --nav-h: 60px;
+}
+
+/* ------------------------------------------------------------------ colour tags */
+.c-blue { --c: var(--blue-rgb); } .c-green { --c: var(--green-rgb); } .c-yellow { --c: var(--yellow-rgb); }
+.c-red { --c: var(--red-rgb); } .c-violet { --c: var(--violet-rgb); } .c-orange { --c: var(--orange-rgb); }
+.c-pink { --c: var(--pink-rgb); } .c-teal { --c: var(--teal-rgb); } .c-gray { --c: var(--gray-rgb); }
+.tag { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: var(--r-sm);
+  font-size: 12px; font-weight: 500; line-height: 1.5; white-space: nowrap;
+  color: rgb(var(--c, var(--gray-rgb))); background: rgba(var(--c, var(--gray-rgb)), .15); border: 1px solid rgba(var(--c, var(--gray-rgb)), .28); }
+.tag--dashed { border-style: dashed; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: rgb(var(--c, var(--gray-rgb))); flex: none; }
+.tag .dot { width: 6px; height: 6px; }
+
+/* ----------------------------------------------------------------------- navbar
+   ONE sticky row at every width: [brand | page links ........ page actions].  Brand and links are grouped on the left (like
+   Linear / GitHub / Vercel) and the page's actions sit on the right; as the window narrows, text labels collapse to icons so
+   nothing ever wraps, overlaps or jumps to another part of the screen.  Shared by the Jobs and Cold-email pages (app/shell.py). */
+.topnav { position: sticky; top: 0; z-index: 30; isolation: isolate; border-bottom: 1px solid var(--hairline); background: rgba(1, 1, 2, .86); }
+.topnav::before { content: ""; position: absolute; inset: 0; z-index: -1; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.topnav__inner { max-width: 1280px; margin: 0 auto; height: var(--nav-h); padding: 0 24px; display: flex; align-items: center; gap: 16px; }
+
+.brand { flex: none; display: inline-flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); font-weight: 600; letter-spacing: -0.2px; border-radius: var(--r-md); }
+.brand__mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; color: #fff; background: var(--primary); box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 0 0 1px rgba(255,255,255,.06); }
+.brand__mark svg { width: 16px; height: 16px; }
+.brand__name span { color: var(--ink-subtle); font-weight: 500; }
+.brand::after { content: ""; width: 1px; height: 22px; margin-left: 6px; background: var(--hairline-strong); }
+
+.topnav__nav { flex: none; position: relative; display: inline-flex; gap: 2px; padding: 4px; border-radius: var(--r-pill); background: rgba(15, 16, 17, .9); border: 1px solid var(--hairline); box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
+.navlink { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 7px 14px; border-radius: var(--r-pill); color: var(--ink-subtle); text-decoration: none; font-size: 14px; font-weight: 500; line-height: 1.2; white-space: nowrap; transition: color .15s, background .15s; }
+.navlink svg { width: 16px; height: 16px; flex: none; }
+.navlink:hover { color: var(--ink); background: rgba(255,255,255,.05); }
+.navlink[aria-current="page"] { color: var(--ink); background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--hairline-strong); }
+.navlink[aria-current="page"] svg { color: var(--primary-hover); }
+.navlink[aria-current="page"]::before {       /* the glowing marker */
+  content: ""; position: absolute; top: -5px; left: 50%; width: 26px; height: 3px; margin-left: -13px; border-radius: 0 0 4px 4px;
+  background: var(--primary-hover); box-shadow: 0 0 10px 2px rgba(130, 143, 255, .55), 0 0 22px 6px rgba(94, 106, 210, .32); }
+
+.topnav__right { margin-left: auto; display: flex; align-items: center; gap: 10px; min-width: 0; flex: none; }
+.fresh { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 9px; border: 1px solid var(--hairline); border-radius: var(--r-pill); background: var(--surface-1); color: var(--ink-subtle); font-size: 12px; white-space: nowrap; min-height: 28px; }
+.fresh:empty { display: none; }
+.fresh::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: rgb(var(--gray-rgb)); flex: none; }
+.fresh[data-state="fresh"]::before { background: rgb(var(--green-rgb)); box-shadow: 0 0 0 3px rgba(var(--green-rgb), .16); }
+.fresh[data-state="stale"]::before { background: rgb(var(--yellow-rgb)); box-shadow: 0 0 0 3px rgba(var(--yellow-rgb), .16); }
+.fresh[data-state="busy"]::before { background: rgb(var(--blue-rgb)); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(var(--blue-rgb), .0); opacity: .55; } }
+.note-chip { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 8px; border-radius: var(--r-pill); font-size: 12px; font-weight: 500; color: rgb(var(--green-rgb)); background: rgba(var(--green-rgb), .12); border: 1px solid rgba(var(--green-rgb), .25); white-space: nowrap; }
+.note-chip svg { width: 15px; height: 15px; flex: none; }
+.avatar { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 10px; font-weight: 600; letter-spacing: 0; color: rgb(var(--violet-rgb)); background: rgba(var(--violet-rgb), .18); box-shadow: inset 0 0 0 1px rgba(var(--violet-rgb), .35); }
+.topnav .btn { flex: none; }
+.topnav .btn svg { width: 16px; height: 16px; flex: none; }
+.topnav a:focus-visible, .topnav button:focus-visible { outline: 2px solid rgba(130, 143, 255, .95); outline-offset: 2px; }
+
+/* Collapse, never wrap: text -> icon as space runs out. Visually hidden text stays in the DOM for screen readers. */
+@media (max-width: 1100px) { .fresh { display: none; } }
+@media (max-width: 900px) {
+  .topnav .btn__text, .topnav .btn__label { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .topnav .btn { padding: 8px; min-width: 36px; }
+  .note-chip { display: none; }
+}
+@media (max-width: 768px) {
+  :root { --nav-h: 56px; }
+  .topnav__inner { padding: 0 16px; gap: 10px; }
+  .brand::after { display: none; }
+}
+@media (max-width: 560px) {
+  .navlink span { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .navlink { padding: 8px 12px; }
+  .navlink svg { width: 18px; height: 18px; }
+}
+@media (max-width: 440px) {
+  .brand__name { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .topnav__inner { gap: 8px; }
+  .topnav__right { gap: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { .fresh::before { animation: none !important; } }

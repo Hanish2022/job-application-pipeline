@@ -1,0 +1,9 @@
+Third-party software included in this repository
+================================================
+
+yc-outreach  (vendor/yc-outreach/)
+  Project:  https://github.com/adityajha2005/yc-outreach
+  Licence:  MIT - the full licence text is kept in vendor/yc-outreach/LICENSE
+  Copyright (c) 2026 yc-founder-outreach contributors
+  Included unmodified. The exact upstream commit and a SHA-256 of every file are recorded in
+  vendor/yc-outreach/UPSTREAM.json. Our integration code lives in app/outreach.py and app/static/outreach.css.

@@ -8,6 +8,7 @@ import urllib.request
 from pathlib import Path
 
 import pytest
+from playwright.sync_api import expect
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -60,6 +61,22 @@ def app(page, live):
     page.goto(live + "/")
     page.wait_for_selector("[data-testid=job]")
     page.base = live  # convenience for tests that navigate again
+    page.console_errors = errors
+    yield page
+    assert errors == [], f"browser errors: {errors}"
+
+
+@pytest.fixture()
+def cold(page, live):
+    """The Cold-email page (vendored yc-outreach inside our shell). Fails the test on unexpected console errors."""
+    errors: list[str] = []
+    page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}") if m.type == "error" else None)
+    page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+    page.set_default_timeout(10000)
+    page.set_viewport_size({"width": 1366, "height": 900})
+    page.goto(live + "/outreach")
+    expect(page.locator("#load")).to_be_enabled()          # batches finished loading (locator waits don't need eval, which the page's CSP forbids)
+    page.base = live
     page.console_errors = errors
     yield page
     assert errors == [], f"browser errors: {errors}"

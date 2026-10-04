@@ -266,3 +266,62 @@ def test_known_urls_touch_and_close_unseen(store):
     assert titles == {"Full", "Other"}                                                # greenhouse job unaffected
     store.touch_urls(["https://w/2"])                                                 # reappears in search => reopened
     assert "Preview" in {j["title"] for j in store.query_jobs(limit=10)["items"]}
+
+
+# ------------------------------------------------------------ salary ranges: multi-select (OR), overlap semantics
+def _ranges_seed(store):
+    store.upsert_jobs([
+        make_job(external_id="low", title="Low", salary_min=300_000, salary_max=360_000, salary_currency="INR"),       # 3-3.6
+        make_job(external_id="mid", title="Mid", salary_min=1_200_000, salary_max=1_800_000, salary_currency="INR"),    # 12-18
+        make_job(external_id="edge", title="Edge", salary_min=500_000, salary_max=1_000_000, salary_currency="INR"),    # 5-10
+        make_job(external_id="high", title="High", salary_min=6_000_000, salary_max=8_000_000, salary_currency="INR"),  # 60-80
+        make_job(external_id="none", title="None"),
+    ])
+
+
+def test_salary_buckets_are_or_ed_and_overlap(store):
+    _ranges_seed(store)
+    t = lambda *tok: {j["title"] for j in store.query_jobs(salary=list(tok), limit=50)["items"]}   # noqa: E731
+    assert t("0-5") == {"Low"}
+    assert t("10-15") == {"Mid"} and t("15-25") == {"Mid"}                      # 12-18 overlaps both ranges
+    assert t("5-10") == {"Edge"} and t("10-15") == {"Mid"}                       # 5-10 ends AT 10: it does not spill into 10-15
+    assert t("40-") == {"High"}
+    assert t("0-5", "40-") == {"Low", "High"}                                    # ticking several widens, never narrows
+    assert t("none") == {"None"} and t("none", "40-") == {"None", "High"}
+    assert t("0-5", "5-10", "10-15", "15-25", "25-40", "40-") == {"Low", "Mid", "Edge", "High"}    # "Any listed"
+    assert t() == {"Low", "Mid", "Edge", "High", "None"}                         # nothing ticked = no filter
+
+
+def test_salary_buckets_combine_with_other_filters_and_the_legacy_params(store):
+    _ranges_seed(store)
+    both = store.query_jobs(salary=["0-5", "40-"], min_lpa=50, limit=50)["items"]
+    assert {j["title"] for j in both} == {"High"}                                 # AND between different filters
+    assert store.query_jobs(salary=["none"], has_salary=True)["total"] == 0
+
+
+def test_salary_token_parsing():
+    from app.store import parse_salary_tokens
+    assert parse_salary_tokens(["5-10", "", " 10-15 ", "5-10", "none", "40-"]) == ["5-10", "10-15", "none", "40-"]
+    for bad in ["5", "a-b", "10-5", "5-5", "-5", "1-2-3", "none ", "1e3-5", "10000-", "0x5-9", "5-10;drop"]:
+        if bad == "none ":
+            continue                                                             # stripped -> valid "none"
+        with pytest.raises(ValueError):
+            parse_salary_tokens([bad])
+    with pytest.raises(ValueError):
+        parse_salary_tokens([f"{i}-{i + 1}" for i in range(20)])                 # too many
+
+
+def test_salary_filter_is_injection_safe(store):
+    _ranges_seed(store)
+    with pytest.raises(ValueError):
+        store.query_jobs(salary=["1-2' OR '1'='1"])
+    assert store.query_jobs()["total"] == 5
+
+
+def test_stats_report_a_count_per_range_for_active_jobs_only(store):
+    _ranges_seed(store)
+    jid = {j["title"]: j["id"] for j in store.query_jobs(limit=50)["items"]}
+    assert store.stats()["salary_buckets"] == {"0-5": 1, "5-10": 1, "10-15": 1, "15-25": 1, "25-40": 0, "40-": 1, "none": 1}
+    store.set_status(jid["Mid"], "applied")                                      # applied jobs leave Active, so they leave the counts
+    store.set_status(jid["High"], "dismissed")
+    assert store.stats()["salary_buckets"] == {"0-5": 1, "5-10": 1, "10-15": 0, "15-25": 0, "25-40": 0, "40-": 0, "none": 1}

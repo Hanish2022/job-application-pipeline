@@ -114,3 +114,49 @@ def test_score_is_bounded_and_deterministic(profile):
     a = _score(profile, "Full Stack Developer", "react " * 500)
     b = _score(profile, "Full Stack Developer", "react " * 500)
     assert a == b and 0 <= a.score <= 100 and len(a.reasons) <= 5
+
+
+# ------------------------------------------------------- scores must spread out instead of piling up at 100
+def test_a_strong_match_is_not_automatically_a_perfect_100(profile):
+    s = _score(profile, "Full Stack Developer (0-2 years)", "React, Node.js, Express, MongoDB, MySQL, JavaScript, Git. 0-2 years of experience.")
+    assert 90 <= s.score <= 99, s.score
+
+
+def test_more_of_your_skills_scores_higher_with_diminishing_returns(profile):
+    base = dict(title="Software Engineer I")
+    scores = [_score(profile, base["title"], d).score for d in
+              ("React", "React Node.js", "React Node.js Express", "React Node.js Express MongoDB", "React Node.js Express MongoDB MySQL JavaScript")]
+    assert scores == sorted(scores) and len(set(scores)) == len(scores), scores            # strictly increasing: no ties
+    gains = [b - a for a, b in zip(scores, scores[1:])]
+    assert gains[0] > gains[-1] > 0, gains                                                 # each extra skill helps a bit less
+
+
+def test_coverage_matters_a_job_asking_for_many_things_you_lack_scores_lower(profile):
+    focused = _score(profile, "Software Engineer I", "React, Node.js, Express.")
+    sprawling = _score(profile, "Software Engineer I", "React, Node.js, Express, Kubernetes, Kafka, Golang, Rust, Terraform, GraphQL, Redis, Angular.")
+    assert focused.score > sprawling.score, (focused.score, sprawling.score)               # same matches, but far less of the job is yours
+
+
+def test_generic_skills_count_less_than_real_ones(profile):
+    real = _score(profile, "Software Engineer I", "React Node.js Express")
+    generic = _score(profile, "Software Engineer I", "Git API REST HTML CSS Agile")
+    assert real.score > generic.score
+
+
+def test_breakdown_adds_up_to_the_score_and_respects_caps(profile):
+    s = _score(profile, "Full Stack Developer (0-2 years)", "React, Node.js, Express, MongoDB. 0-2 years of experience.")
+    parts = s.parts
+    assert parts["cap"] is None
+    assert [parts[k][1] for k in ("skills", "role", "level", "location")] == [50, 25, 20, 5]
+    assert all(0 <= parts[k][0] <= parts[k][1] for k in ("skills", "role", "level", "location"))
+    assert round(sum(parts[k][0] for k in ("skills", "role", "level", "location"))) == s.score
+    senior = _score(profile, "Senior Backend Engineer", "React Node.js Express MongoDB 8+ years of experience")
+    assert senior.parts["cap"] == 25 and senior.score == 25
+    assert sum(senior.parts[k][0] for k in ("skills", "role", "level", "location")) > 25       # the cap, not the parts, is why it is low
+    assert _score(profile, "Account Executive", "React").parts["cap"] == 20
+    assert _score({**profile, "exclude_keywords": ["intern"]}, "Software Engineer Intern", "React").parts["cap"] == 5
+
+
+def test_no_realistic_job_reaches_100(profile):
+    everything = "React Node.js Express MongoDB MySQL SQL JavaScript Python Java Docker AWS Git REST API HTML CSS Tailwind JWT " * 3
+    assert _score(profile, "Full Stack Developer (0-2 years)", everything).score <= 99
