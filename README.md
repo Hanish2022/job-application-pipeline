@@ -21,6 +21,9 @@ Remotive · Wellfound + YC (via TinyFish) ·          daily cron
   "Work at a Startup" via TinyFish (search **and** Wellfound listing pages). Duplicates across sources are merged.
 - **Salary in LPA** — shown on each card (foreign currencies converted and marked `≈`), with a **multi-select** salary filter
   (tick several ranges at once).
+- **Learns from what you dismiss, and tidies up** — dismissing stays one click, then you may say why (wrong tech stack, too senior,
+  location, salary, staffing agency, hide this company). Staffing agencies and old or possibly-closed postings are hidden by default
+  with a visible count and a *Show* link. A *Skill gaps* panel lists what your best matches ask for that your resume lacks.
 - **Colour-coded at a glance** — match ring, level, status, remote, salary and source each have a fixed colour, all checked for
   readable contrast. See [Design and colour coding](#design-and-colour-coding).
 - **Filters you can add and remove** — search, score, level, India/Remote, source, posted-within, company, salary ranges, sort.
@@ -283,7 +286,22 @@ and belong to their individual authors, and this project has no build step.
 - **Filters** are in the sidebar; each active one is a removable chip and the whole view is in the URL, so it can be bookmarked. The
   salary filter is a set of checkboxes (see [Salary](#salary-lpa)); counts next to each range show how many active jobs fall in it.
 - **Profile** lets you edit skills, locations, level and "hide titles containing…" keywords, or upload a new resume;
-  all jobs are re-scored instantly.
+  all jobs are re-scored instantly. It also lists the companies you hid or marked as staffing agencies, with a button to undo each.
+- **Why did you dismiss it?** After you dismiss a job a toast offers one-click reasons (it disappears on its own; ignoring it is fine).
+  *Hide this company* keeps all of that company's jobs out of Active. *Staffing agency* flags the company for the switch below.
+  *Wrong tech stack* teaches the matcher: once **two** jobs you dismissed that way mention the same technology (and it is not on
+  your resume), jobs that use it lose 6 points each (up to 15), and the job's score breakdown says so. Restoring a job takes its lesson
+  back. The other reasons are recorded and shown on the Dismissed tab.
+- **Tidy up** (sidebar, on by default, Active tab only): *Hide staffing agencies* and *Hide old postings*. A staffing agency is spotted by
+  its name ("… Staffing", "… Recruitments"), a short list of well-known placement firms, or a posting that says it hires for a client;
+  it is a heuristic that prefers missing an agency to hiding a real employer (`app/agencies.py`). *Old* means posted over 60 days ago;
+  *possibly closed* means not seen in a crawl for a week while other jobs were (measured against your newest crawl, so skipping a few
+  crawls hides nothing). Both show a count and a *Show* link, and **a job you saved is never hidden.**
+- **Skill gaps** (button above the list): counts the technologies in your best active matches (score 50+) that are not on your resume,
+  most-wanted first, with what you already know that is close ("You know javascript"). The panel opens at once and fills in. Per skill:
+  *Show jobs* filters the list to jobs that mention it; *I know this* adds it to your **profile** (your resume file is not changed),
+  re-matches your jobs, moves focus to the next skill and offers **Undo** (or remove it later under Profile → Skills). Only click it for
+  skills you can honestly claim.
 - A dashed **Preview** badge means the job was found through search and its page couldn't be read yet — open it to confirm.
 - The dot next to *Last refreshed* in the navbar shows freshness: green (under a day), yellow (older or failed), pulsing blue
   (crawling), gray (never).
@@ -293,7 +311,7 @@ system follows Raycast's.
 
 ## How matching works (`app/matcher.py`)
 
-`score = skills (0-50) + title fit (0-25) + seniority fit (0-20) + location (0-5)`
+`score = skills (0-50) + title fit (0-25) + seniority fit (0-20) + location (0-5)`, minus up to 15 for technologies you told it you pass on
 
 The number on each job's ring is this score: **how well the job fits your resume, out of 100** (green 80+, blue 60–79, yellow 40–59,
 gray below). Open a job to see the four parts as bars ("How the score is made") and, if a cap applied, why. The skills part has two
@@ -403,7 +421,7 @@ stops the run.
 
 ## Tests
 
-`./scripts/test.sh` runs ~590 tests (about 130 of them in a real browser) against throw-away databases; your real `data/jobs.db`
+`./scripts/test.sh` runs ~700 tests (about 160 of them in a real browser) against throw-away databases; your real `data/jobs.db`
 and API keys are never touched:
 
 - **Unit:** text utils, store/dedupe/filters (including salary ranges and the Active/Applied split), each source parser, retry logic,
@@ -427,7 +445,8 @@ app/
   cli.py           command line (crawl / refresh / sync-feed / due / serve …)
   pipeline.py      crawl orchestration + scoring run; feed.py = GitHub feed import; schedule.py = "is a crawl due?"
   matcher.py       0–100 job ↔ resume score (+ breakdown); skills.py, resume.py, salary.py, textutil.py
-  store.py         SQLite: jobs, filters, salary ranges, stats, runs, rejected-URL memory
+  agencies.py      spots staffing agencies / body-shops;  insights.py = the skill-gaps count
+  store.py         SQLite: jobs, filters, salary ranges, stats, runs, rejected-URL memory, dismiss reasons, hidden companies
   shell.py         the shared navbar; assets.py = cache-busting of static files
   outreach.py      integration of the vendored Cold-email project (SSRF guard, themed page)
   config.py        settings (.env), APP_NAME

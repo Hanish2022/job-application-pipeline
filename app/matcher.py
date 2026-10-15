@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from .skills import GENERIC, RELATED, count_skills
 
@@ -53,6 +53,8 @@ class Score:
     matched: list[str]
     reasons: list[str]
     parts: dict | None = None     # {"skills": (points, max), "role": ..., "level": ..., "location": ..., "cap": None | int}
+    avoided: list = field(default_factory=list)     # technologies you have passed on (profile["avoid_skills"]) that this job uses
+    avoid_penalty: int = 0                          # points taken off for them
 
 
 def _max_required_years(text: str) -> int | None:
@@ -185,6 +187,13 @@ def score_job(
 
     total = skill_pts + role_pts + level_pts + loc_pts
 
+    # --- technologies you have passed on -----------------------------------------
+    # "avoid_skills" is learned from jobs you dismissed as "wrong tech stack" (Store.learned_avoid_skills); it is not part of the
+    # saved profile. Anything you list as a skill yourself is never penalised.
+    avoided = sorted(s for s in job_skills if s in set(profile.get("avoid_skills") or []) and s not in mine and s not in GENERIC)
+    penalty = min(15, 6 * len(avoided)) if avoided else 0
+    total -= penalty
+
     # --- gates ------------------------------------------------------------------
     cap: int | None = None
     if not tech and not hits:
@@ -203,10 +212,12 @@ def score_job(
     if cap is not None:
         total = min(total, float(cap))
 
+    if avoided:
+        reasons.insert(0, "Uses technologies you passed on: " + ", ".join(avoided[:4]))
     if matched:
         reasons.insert(0, "Matches your skills: " + ", ".join(matched[:6]))
     parts = {
         "skills": (round(skill_pts, 1), 50), "role": (round(role_pts, 1), 25),
         "level": (round(level_pts, 1), 20), "location": (round(loc_pts, 1), 5), "cap": cap,
     }
-    return Score(int(round(max(0.0, min(100.0, total)))), level, matched[:12], reasons[:5], parts)
+    return Score(int(round(max(0.0, min(100.0, total)))), level, matched[:12], reasons[:5], parts, avoided, penalty)

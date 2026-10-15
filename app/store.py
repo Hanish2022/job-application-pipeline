@@ -10,12 +10,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
-from . import config
+from . import agencies, config
 from . import salary as sal
 from .models import Job
+from .skills import GENERIC, count_skills
 from .textutil import is_india, norm, remote_eligible
 
 VALID_STATUSES = ("new", "saved", "applied", "dismissed")
+
+# Why a job was dismissed (optional; one click on the toast that follows a dismissal).
+DISMISS_REASONS = ("wrong_stack", "too_senior", "location", "salary", "agency", "company", "other")
+FLAG_KINDS = ("blocked", "agency")        # blocked: never show this company;  agency: hide while "hide staffing agencies" is on
+MAX_AGE_DAYS = 60         # a posting older than this counts as "old"
+UNSEEN_DAYS = 7           # not seen in a crawl for this long, compared with the NEWEST sighting in the database = "possibly closed"
+AVOID_MIN_JOBS = 2        # a technology is "passed on" once it appears in this many jobs you dismissed as "wrong stack"
 
 # Salary filter buckets (LPA). Ticking several means OR. A job matches a range bucket when its advertised range OVERLAPS it
 # (so ₹12-18 LPA appears under both "10-15" and "15-25"); "none" matches jobs with no salary.
@@ -97,6 +105,13 @@ CREATE TABLE IF NOT EXISTS kv (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS company_flags (
+    name_norm TEXT NOT NULL,
+    kind      TEXT NOT NULL,
+    name      TEXT NOT NULL,
+    at        TEXT NOT NULL,
+    PRIMARY KEY (name_norm, kind)
+);
 CREATE TABLE IF NOT EXISTS rejected (
     url TEXT PRIMARY KEY,
     reason TEXT NOT NULL DEFAULT '',
@@ -114,6 +129,25 @@ CREATE TABLE IF NOT EXISTS runs (
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _shift(iso: str, days: int) -> str:
+    """An ISO timestamp moved by N days (string-comparable with the timestamps we store)."""
+    try:
+        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        t = datetime.now(timezone.utc)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (t + timedelta(days=days)).isoformat(timespec="seconds")
+
+
+def _name_key(name: str) -> str:
+    return (name or "").strip().lower()
+
+
+_FLAGGED_AGENCY = "(SELECT name_norm FROM company_flags WHERE kind='agency')"
+_BLOCKED_SQL = "lower(trim(company)) NOT IN (SELECT name_norm FROM company_flags WHERE kind='blocked')"
 
 
 def fingerprint(job: Job) -> str:
@@ -147,6 +181,14 @@ class Store:
                         (found.min_lpa, found.max_lpa, found.currency, found.raw, r["id"]),
                     )
         c.execute("CREATE INDEX IF NOT EXISTS idx_jobs_salary ON jobs(salary_max_lpa)")
+        if "agency_reason" not in cols:            # staffing-agency detection (app/agencies.py); '' = not an agency
+            c.execute("ALTER TABLE jobs ADD COLUMN agency_reason TEXT NOT NULL DEFAULT ''")
+            for r in c.execute("SELECT id, company, description FROM jobs").fetchall():
+                reason = agencies.agency_reason(r["company"], r["description"])
+                if reason:
+                    c.execute("UPDATE jobs SET agency_reason=? WHERE id=?", (reason, r["id"]))
+        if "dismiss_reason" not in cols:           # why the user dismissed it ('' = no reason given)
+            c.execute("ALTER TABLE jobs ADD COLUMN dismiss_reason TEXT NOT NULL DEFAULT ''")
 
     @contextmanager
     def conn(self) -> Iterator[sqlite3.Connection]:
@@ -180,6 +222,7 @@ class Store:
                 found = sal.extract(job.salary, job.description, structured=structured)
                 lo, hi, cur = (found.min_lpa, found.max_lpa, found.currency) if found else (None, None, "")
                 salary_text = job.salary or (found.raw if found else "")
+                agency = agencies.agency_reason(job.company, job.description)
                 row = (
                     fp, job.source, str(job.external_id), job.board, job.title.strip(), job.company.strip(),
                     loc, int(remote_eligible(loc, job.remote)), int(is_india(loc)), job.url,
@@ -203,9 +246,9 @@ class Store:
                         """UPDATE jobs SET url=?, description=?, posted_at=COALESCE(?, posted_at), salary=?,
                                salary_min_lpa=?, salary_max_lpa=?, salary_currency=?,
                                department=?, employment_type=?, tags=?, remote=?, is_india=?,
-                               closed=0, last_seen=? WHERE id=?""",
+                               closed=0, last_seen=?, agency_reason=? WHERE id=?""",
                         (job.url, job.description, job.posted_at, salary_text, lo, hi, cur, job.department,
-                         job.employment_type, json.dumps(job.tags), row[7], row[8], now, existing["id"]),
+                         job.employment_type, json.dumps(job.tags), row[7], row[8], now, agency, existing["id"]),
                     )
                     updated += 1
                 else:
@@ -213,9 +256,9 @@ class Store:
                         """INSERT INTO jobs (fingerprint, source, external_id, board, title, company, location,
                                remote, is_india, url, description, posted_at, salary, department,
                                employment_type, tags, first_seen, last_seen,
-                               salary_min_lpa, salary_max_lpa, salary_currency)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (*row, lo, hi, cur),
+                               salary_min_lpa, salary_max_lpa, salary_currency, agency_reason)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (*row, lo, hi, cur, agency),
                     )
                     inserted += 1
         return {"inserted": inserted, "updated": updated}
@@ -298,12 +341,99 @@ class Store:
                 f"UPDATE jobs SET closed=1 WHERE closed=0 AND source IN ({marks}) AND last_seen < ?", [*sources, cutoff]
             ).rowcount
 
-    def set_status(self, job_id: int, status: str) -> bool:
+    def set_status(self, job_id: int, status: str, reason: str = "") -> bool:
+        """Change a job's status. A dismissal may carry a reason; 'company' and 'agency' also flag the whole company.
+        Moving a job back out of 'dismissed' undoes the flag its dismissal created (so Restore really restores)."""
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid status: {status}")
+        if reason and (status != "dismissed" or reason not in DISMISS_REASONS):
+            raise ValueError(f"invalid dismiss reason: {reason!r}")
         with self.conn() as c:
-            cur = c.execute("UPDATE jobs SET status=? WHERE id=?", (status, job_id))
-            return cur.rowcount > 0
+            row = c.execute("SELECT company, status, dismiss_reason FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                return False
+            if row["status"] == "dismissed" and status != "dismissed" and row["dismiss_reason"] in ("company", "agency"):
+                kind = "blocked" if row["dismiss_reason"] == "company" else "agency"
+                c.execute("DELETE FROM company_flags WHERE name_norm=? AND kind=?", (_name_key(row["company"]), kind))
+            elif row["status"] == "dismissed" and status == "dismissed" and row["dismiss_reason"] in ("company", "agency") and reason != row["dismiss_reason"]:
+                kind = "blocked" if row["dismiss_reason"] == "company" else "agency"       # the reason was changed: drop the old flag
+                c.execute("DELETE FROM company_flags WHERE name_norm=? AND kind=?", (_name_key(row["company"]), kind))
+            c.execute("UPDATE jobs SET status=?, dismiss_reason=? WHERE id=?", (status, reason if status == "dismissed" else "", job_id))
+            if status == "dismissed" and reason in ("company", "agency"):
+                self._flag(c, row["company"], "blocked" if reason == "company" else "agency")
+        return True
+
+    # ------------------------------------------------------------ company flags
+    @staticmethod
+    def _flag(c: sqlite3.Connection, name: str, kind: str) -> None:
+        key = _name_key(name)
+        if key:
+            c.execute("INSERT INTO company_flags(name_norm, kind, name, at) VALUES(?,?,?,?) ON CONFLICT(name_norm, kind) DO NOTHING",
+                      (key, kind, name.strip()[:120], now_iso()))
+
+    def flag_company(self, name: str, kind: str) -> bool:
+        if kind not in FLAG_KINDS:
+            raise ValueError(f"invalid flag kind: {kind!r}")
+        if not _name_key(name):
+            raise ValueError("empty company name")
+        with self.conn() as c:
+            self._flag(c, name, kind)
+        return True
+
+    def unflag_company(self, name: str, kind: str) -> bool:
+        if kind not in FLAG_KINDS:
+            raise ValueError(f"invalid flag kind: {kind!r}")
+        with self.conn() as c:
+            return c.execute("DELETE FROM company_flags WHERE name_norm=? AND kind=?", (_name_key(name), kind)).rowcount > 0
+
+    def company_flags(self) -> dict:
+        with self.conn() as c:
+            rows = c.execute("SELECT kind, name FROM company_flags ORDER BY lower(name)").fetchall()
+        return {"blocked": [r["name"] for r in rows if r["kind"] == "blocked"], "agencies": [r["name"] for r in rows if r["kind"] == "agency"]}
+
+    def learned_avoid_skills(self, min_jobs: int = AVOID_MIN_JOBS) -> list[str]:
+        """Technologies that show up in at least `min_jobs` jobs you dismissed as 'wrong stack' (generic ones like git/html ignored).
+        Derived on demand from your dismissals, so un-dismissing a job takes its influence away again."""
+        seen: dict[str, int] = {}
+        with self.conn() as c:
+            rows = c.execute("SELECT title, description, tags, department FROM jobs WHERE status='dismissed' AND dismiss_reason='wrong_stack'").fetchall()
+        for r in rows:
+            for skill in count_skills(f"{r['title']}\n{r['tags']}\n{r['department']}\n{r['description']}"):
+                if skill not in GENERIC:
+                    seen[skill] = seen.get(skill, 0) + 1
+        return sorted(k for k, n in seen.items() if n >= min_jobs)
+
+    def jobs_for_insight(self, min_score: int = 50, limit: int = 250) -> list[sqlite3.Row]:
+        """The best-matching jobs still on your plate (new + saved, not hidden), with text, for the skills-gap analysis."""
+        with self.conn() as c:
+            where, args = self._hiding(c, True, True)
+            return c.execute(
+                f"SELECT title, description, tags, department, score FROM jobs WHERE closed=0 AND status IN ('new','saved') AND score >= ? "
+                f"AND {_BLOCKED_SQL}{where} ORDER BY score DESC, id DESC LIMIT ?", [int(min_score), *args, int(limit)]).fetchall()
+
+    # ------------------------------------------------------------- hide rules
+    @staticmethod
+    def _hiding(c: sqlite3.Connection, hide_old: bool, hide_agencies: bool) -> tuple[str, list]:
+        """SQL (starting with ' AND ') for the two "tidy up" rules. They only apply to the Active list, and never hide a job you saved."""
+        rules = Store._rules(c, hide_old, hide_agencies)
+        return "".join(f" AND {sql}" for sql, _ in rules.values()), [a for _, args in rules.values() for a in args]
+
+    @staticmethod
+    def _cutoffs(c: sqlite3.Connection) -> tuple[str, str]:
+        """(posted before this = old, last seen before this = possibly closed).  'Seen' is measured against the NEWEST sighting in
+        the database, not the clock, so a few weeks without a crawl doesn't make every job look closed."""
+        newest = c.execute("SELECT MAX(last_seen) FROM jobs").fetchone()[0]
+        return _shift(now_iso(), -MAX_AGE_DAYS), (_shift(newest, -UNSEEN_DAYS) if newest else now_iso())
+
+    @staticmethod
+    def _rules(c: sqlite3.Connection, hide_old: bool, hide_agencies: bool) -> dict[str, tuple[str, list]]:
+        rules: dict[str, tuple[str, list]] = {}
+        if hide_old:
+            age_cutoff, seen_cutoff = Store._cutoffs(c)
+            rules["old"] = ("(status='saved' OR (COALESCE(NULLIF(posted_at,''), first_seen) >= ? AND last_seen >= ?))", [age_cutoff, seen_cutoff])
+        if hide_agencies:
+            rules["agencies"] = (f"(status='saved' OR (agency_reason = '' AND lower(trim(company)) NOT IN {_FLAGGED_AGENCY}))", [])
+        return rules
 
     def update_scores(self, rows: Iterable[tuple[int, int, str, list, list]]) -> int:
         n = 0
@@ -326,7 +456,12 @@ class Store:
     def get_job(self, job_id: int) -> Optional[dict]:
         with self.conn() as c:
             row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
-        return _row_to_dict(row) if row else None
+            flagged, cutoffs = self._flagged_agencies(c), self._cutoffs(c)
+        return _row_to_dict(row, flagged_agencies=flagged, cutoffs=cutoffs) if row else None
+
+    @staticmethod
+    def _flagged_agencies(c: sqlite3.Connection) -> set[str]:
+        return {r[0] for r in c.execute("SELECT name_norm FROM company_flags WHERE kind='agency'")}
 
     def query_jobs(
         self,
@@ -345,6 +480,8 @@ class Store:
         limit: int = 30,
         offset: int = 0,
         include_closed: bool = False,
+        hide_old: bool = False,        # Active list only: drop postings older than MAX_AGE_DAYS and ones not seen in a crawl lately
+        hide_agencies: bool = False,   # Active list only: drop staffing agencies / body-shops
     ) -> dict:
         where, args = [], []
         if not include_closed:
@@ -391,6 +528,7 @@ class Store:
             args += statuses
         else:
             where.append("status NOT IN ('dismissed', 'applied')")      # "Active" = still to act on: new + saved
+            where.append(_BLOCKED_SQL)                                  # companies you chose never to see
         if posted_within_days:
             cutoff = (datetime.now(timezone.utc) - timedelta(days=int(posted_within_days))).isoformat(timespec="seconds")
             # Fall back to first_seen when the source gives no posting date.
@@ -403,25 +541,40 @@ class Store:
             "company": "lower(company) ASC, score DESC, id DESC",
             "salary": "salary_max_lpa IS NULL, salary_max_lpa DESC, score DESC, id DESC",
         }.get(sort, "score DESC, id DESC")
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
         limit = max(1, min(int(limit), 200))
         offset = max(0, int(offset))
+        active_list = not statuses
         with self.conn() as c:
+            rules = self._rules(c, hide_old and active_list, hide_agencies and active_list)
+            # Count what each rule hides (given every OTHER filter) so the page can say "12 older postings are hidden".
+            base = (" WHERE " + " AND ".join(where)) if where else ""
+            hidden = {name: c.execute(f"SELECT COUNT(*) FROM jobs{base}{' AND' if base else ' WHERE'} NOT {sql}", [*args, *rargs]).fetchone()[0]
+                      for name, (sql, rargs) in rules.items()}
+            for sql, rargs in rules.values():
+                where.append(sql)
+                args += rargs
+            clause = (" WHERE " + " AND ".join(where)) if where else ""
             total = c.execute(f"SELECT COUNT(*) FROM jobs{clause}", args).fetchone()[0]
             rows = c.execute(
                 f"SELECT * FROM jobs{clause} ORDER BY {order} LIMIT ? OFFSET ?", [*args, limit, offset]
             ).fetchall()
-        return {"total": total, "items": [_row_to_dict(r, brief=True) for r in rows], "limit": limit, "offset": offset}
+            flagged, cutoffs = self._flagged_agencies(c), self._cutoffs(c)
+        return {"total": total, "items": [_row_to_dict(r, brief=True, flagged_agencies=flagged, cutoffs=cutoffs) for r in rows], "limit": limit, "offset": offset,
+                "hidden": {"old": hidden.get("old", 0), "agencies": hidden.get("agencies", 0)}}
 
-    def stats(self) -> dict:
+    def stats(self, hide_old: bool = False, hide_agencies: bool = False) -> dict:
+        """Counts for the dashboard. The 'strong matches' and salary-range counts describe the Active list, so they follow the
+        same hide rules the list uses (otherwise a count could promise jobs the list doesn't show)."""
         with self.conn() as c:
+            hide_sql, hide_args = self._hiding(c, hide_old, hide_agencies)
+            active = f"closed=0 AND status NOT IN ('dismissed', 'applied') AND {_BLOCKED_SQL}{hide_sql}"
             total = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0").fetchone()[0]
             by_status = {r["status"]: r["n"] for r in c.execute(
                 "SELECT status, COUNT(*) n FROM jobs WHERE closed=0 GROUP BY status")}
             by_source = {r["source"]: r["n"] for r in c.execute(
                 "SELECT source, COUNT(*) n FROM jobs WHERE closed=0 GROUP BY source")}
             with_salary = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND salary_max_lpa IS NOT NULL").fetchone()[0]
-            strong = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND score>=60 AND status NOT IN ('dismissed', 'applied')").fetchone()[0]
+            strong = c.execute(f"SELECT COUNT(*) FROM jobs WHERE {active} AND score>=60", hide_args).fetchone()[0]
             new_today = c.execute(
                 "SELECT COUNT(*) FROM jobs WHERE closed=0 AND first_seen >= ?",
                 ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds"),),
@@ -429,9 +582,7 @@ class Store:
             buckets = {}
             for token, _label in SALARY_BUCKETS:        # counts across the jobs you still have to act on (the Active tab)
                 clause, clause_args = salary_clause([token])
-                buckets[token] = c.execute(
-                    f"SELECT COUNT(*) FROM jobs WHERE closed=0 AND status NOT IN ('dismissed', 'applied') AND {clause}", clause_args
-                ).fetchone()[0]
+                buckets[token] = c.execute(f"SELECT COUNT(*) FROM jobs WHERE {active} AND {clause}", [*hide_args, *clause_args]).fetchone()[0]
             last = c.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()
         return {
             "total": total,
@@ -495,8 +646,14 @@ def _run_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-def _row_to_dict(row: sqlite3.Row, brief: bool = False) -> dict:
+def _row_to_dict(row: sqlite3.Row, brief: bool = False, flagged_agencies: Optional[set] = None,
+                 cutoffs: Optional[tuple[str, str]] = None) -> dict:
     d = dict(row)
+    if cutoffs:
+        age_cutoff, seen_cutoff = cutoffs
+        d["old"] = (d.get("posted_at") or d["first_seen"]) < age_cutoff            # posted long ago (undated jobs: first seen long ago)
+        d["possibly_closed"] = d["last_seen"] < seen_cutoff                       # not seen in a crawl for a week while others were
+    d["agency"] = d.pop("agency_reason", "") or ("You marked this company as a staffing agency" if _name_key(d["company"]) in (flagged_agencies or ()) else "")
     for k in ("tags", "matched", "reasons"):
         d[k] = json.loads(d.get(k) or "[]")
     d["remote"] = bool(d["remote"])

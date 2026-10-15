@@ -148,7 +148,7 @@ def test_posted_within_filter(app):
     page = app
     assert "SDE I - Backend" in titles(page)
     page.get_by_test_id("days").select_option("30")
-    wait_count(page, r"of 38 jobs$")                       # SDE I was posted 60 days ago
+    wait_count(page, r"of 38 jobs$")                       # SDE I was posted 45 days ago
     assert "SDE I - Backend" not in titles(page)
     expect(page.locator("[data-testid=chip]").filter(has_text="Last 30 days")).to_be_visible()
 

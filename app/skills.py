@@ -94,8 +94,45 @@ _PATTERNS: dict[str, list[re.Pattern]] = {
 }
 
 
+# Word-boundary rule shared by the regexes above and the fast scanner below:
+#   not preceded by [a-z0-9+#.]   and   not followed by [a-z0-9+#]  or  by "." + [a-z0-9]
+_WORD = frozenset("abcdefghijklmnopqrstuvwxyz0123456789")
+_BEFORE_BAD = _WORD | frozenset("+#.")
+_AFTER_BAD = _WORD | frozenset("+#")
+_ALIASES: list[tuple[str, list[str]]] = [(skill, [a.lower() for a in aliases]) for skill, aliases in SKILLS.items()]
+
+
+def _count_alias(low: str, alias: str) -> int:
+    """How many times `alias` appears in `low` as a whole word (same answer as the regex in _compile, found with str.find:
+    that is ~20x faster, which matters because every job is re-read on each rescore)."""
+    n, i, size, end = 0, low.find(alias), len(alias), len(low)
+    while i != -1:
+        j = i + size
+        before = low[i - 1] if i else ""
+        after = low[j] if j < end else ""
+        if before not in _BEFORE_BAD and after not in _AFTER_BAD and not (after == "." and j + 1 < end and low[j + 1] in _WORD):
+            n += 1
+            i = low.find(alias, j)               # matches never overlap
+        else:
+            i = low.find(alias, i + 1)
+    return n
+
+
 def count_skills(text: str) -> dict[str, int]:
     """Return {canonical_skill: mention_count} for every vocabulary skill found in text."""
+    found: dict[str, int] = {}
+    if not text:
+        return found
+    low = text.lower()
+    for skill, aliases in _ALIASES:
+        n = sum(_count_alias(low, a) for a in aliases if a in low)       # `a in low` is a cheap pre-check; most aliases are absent
+        if n:
+            found[skill] = n
+    return found
+
+
+def count_skills_regex(text: str) -> dict[str, int]:
+    """The original, slower implementation. Kept as the reference the tests compare count_skills against."""
     found: dict[str, int] = {}
     if not text:
         return found

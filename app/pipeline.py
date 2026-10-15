@@ -62,6 +62,7 @@ def ensure_profile(store: Store, resume: str | Path | None = None, force: bool =
 
 
 def rescore(store: Store, profile: dict) -> int:
+    profile = {**profile, "avoid_skills": store.learned_avoid_skills()}      # what you dismissed as "wrong tech stack" (not saved in the profile)
     rows = []
     for r in store.all_for_scoring():
         s = score_job(

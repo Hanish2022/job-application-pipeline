@@ -1,6 +1,6 @@
 """Deterministic server for the Playwright tests: seeded temp DB + a fake (offline) crawler.
 
-usage: python tests/e2e/server.py <db-path> <port>
+usage: python tests/e2e/server.py <db-path> <port> [feedback]
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def seed(store: Store, port: int) -> None:
     jobs = [
         Job("greenhouse", "1", "Full Stack Developer (0-2 years)", "Alpha", link(1), "Bengaluru, India", False, desc, iso(0.5), board="alpha",
             salary_min=1_200_000, salary_max=1_800_000, salary_currency="INR"),
-        Job("lever", "2", "SDE I - Backend", "Beta", link(2), "Remote", True, desc, iso(60), board="beta",
+        Job("lever", "2", "SDE I - Backend", "Beta", link(2), "Remote", True, desc, iso(45), board="beta",
             salary="USD 60,000–80,000 annual", salary_min=60_000, salary_max=80_000, salary_currency="USD"),
         Job("ashby", "3", "Frontend Intern", "Gamma", link(3), "Pune, India", False, "React, CSS, HTML. Internship for students.", iso(2), board="gamma",
             salary_min=25_000, salary_max=30_000, salary_currency="INR", salary_period="month"),
@@ -54,6 +54,30 @@ def seed(store: Store, port: int) -> None:
     rescore(store, profile)
     rid = store.start_run()
     store.finish_run(rid, "ok", {"sources": {}})
+
+
+def seed_feedback(store: Store, port: int) -> None:
+    """Extra jobs for the dismiss-reason / agency / old-posting / skill-gap tests (only when the server is started with 'feedback')."""
+    import sqlite3
+    link = lambda n: f"http://127.0.0.1:{port}/api/health?job=fb{n}"  # noqa: E731
+    fs = "React Node.js Express MongoDB"
+    jobs = [
+        Job("greenhouse", "fb1", "Full Stack Developer (0-2 years)", "Saral Recruitments", link(1), "Bengaluru, India", False, fs, iso(1), board="saral"),
+        Job("greenhouse", "fb2", "Full Stack Developer (0-2 years)", "Ancient Co", link(2), "Bengaluru, India", False, fs, iso(200), board="ancient"),
+        Job("greenhouse", "fb3", "Full Stack Developer (0-2 years)", "Vanished Co", link(3), "Bengaluru, India", False, fs, iso(3), board="vanished"),
+        Job("greenhouse", "fb4", "Full Stack Developer (0-2 years)", "Django Shop", link(4), "Bengaluru, India", False, fs + " Django Flask", iso(1), board="django"),
+        Job("greenhouse", "fb5", "Backend Developer (0-2 years)", "Django Shop", link(5), "Bengaluru, India", False, fs + " Django Flask", iso(1), board="django"),
+        Job("greenhouse", "fb6", "Full Stack Developer (0-2 years)", "Target Co", link(6), "Bengaluru, India", False, fs + " Django", iso(1), board="target"),
+    ]
+    for i in range(3):              # three ordinary jobs that all ask for TypeScript and Docker, which the seeded resume lacks
+        jobs.append(Job("greenhouse", f"fb1{i}", "Full Stack Developer (0-2 years)", f"Gap Co {i}", link(10 + i), "Bengaluru, India", False,
+                        fs + " TypeScript Docker", iso(1), board=f"gap{i}"))
+    store.upsert_jobs(jobs)
+    db = sqlite3.connect(store.path)
+    db.execute("UPDATE jobs SET first_seen=? WHERE company='Ancient Co'", (iso(200),))
+    db.execute("UPDATE jobs SET last_seen=? WHERE company='Vanished Co'", (iso(20),))
+    db.commit(); db.close()
+    rescore(store, store.load_profile())
 
 
 def make_crawler(port: int):
@@ -112,5 +136,7 @@ if __name__ == "__main__":
     db, port = sys.argv[1], int(sys.argv[2])
     store = Store(db)
     seed(store, port)
+    if "feedback" in sys.argv[3:]:
+        seed_feedback(store, port)
     fake_yc_network()
     uvicorn.run(create_app(store, crawler=make_crawler(port)), host="127.0.0.1", port=port, log_level="warning")

@@ -15,12 +15,12 @@ from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import assets, config, outreach, shell
+from . import assets, config, insights, outreach, shell
 from .feed import refresh
 from .matcher import score_job
 from .pipeline import PipelineBusy, ensure_profile, rescore
 from .resume import ResumeError, profile_from_file
-from .store import VALID_STATUSES, Store, parse_salary_tokens
+from .store import FLAG_KINDS, VALID_STATUSES, Store, parse_salary_tokens
 
 Level = Literal["intern", "entry", "mid", "senior", "unknown"]
 Status = Literal["new", "saved", "applied", "dismissed"]
@@ -28,8 +28,18 @@ Loc = Literal["india", "remote"]
 MAX_UPLOAD = 5 * 1024 * 1024
 
 
+Reason = Literal["wrong_stack", "too_senior", "location", "salary", "agency", "company", "other"]
+Kind = Literal["blocked", "agency"]
+
+
 class StatusBody(BaseModel):
     status: Status
+    reason: Optional[Reason] = None          # only meaningful with status="dismissed"
+
+
+class FlagBody(BaseModel):
+    company: str = Field(min_length=1, max_length=120)
+    kind: Kind
 
 
 class ProfileUpdate(BaseModel):
@@ -60,10 +70,11 @@ def _breakdown_for(store: Store, job: dict) -> Optional[dict]:
     profile = store.load_profile()
     if not profile:
         return None
+    profile = {**profile, "avoid_skills": store.learned_avoid_skills()}
     s = score_job(job["title"], job["description"], is_india=job["is_india"], remote=job["remote"], profile=profile,
                   tags=json.dumps(job["tags"]), department=job["department"])
     parts = {k: {"points": v[0], "max": v[1]} for k, v in s.parts.items() if k != "cap"}
-    return {"parts": parts, "cap": s.parts["cap"], "total": s.score}
+    return {"parts": parts, "cap": s.parts["cap"], "total": s.score, "avoided": s.avoided, "avoid_points": s.avoid_penalty}
 
 
 def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store], dict]] = None) -> FastAPI:
@@ -97,6 +108,8 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
         sort: Literal["score", "newest", "company", "salary"] = "score",
         limit: int = Query(30, ge=1, le=200),
         offset: int = Query(0, ge=0),
+        hide_old: bool = Query(False, description="Active list only: hide postings older than 60 days and ones not seen in a crawl lately"),
+        hide_agencies: bool = Query(False, description="Active list only: hide staffing agencies / body-shops"),
     ):
         levels, locs, statuses = _csv(level), _csv(location), _csv(status)
         if any(l not in ("intern", "entry", "mid", "senior", "unknown") for l in levels):
@@ -112,6 +125,7 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
         return store.query_jobs(
             q=q, min_score=min_score, levels=levels, locations=locs, sources=_csv(source),
             statuses=statuses, company=company, posted_within_days=days, min_lpa=min_lpa, has_salary=has_salary, salary=salary_tokens, sort=sort, limit=limit, offset=offset,
+            hide_old=hide_old, hide_agencies=hide_agencies,
         )
 
     @app.get("/api/jobs/{job_id}")
@@ -125,13 +139,58 @@ def create_app(store: Optional[Store] = None, crawler: Optional[Callable[[Store]
 
     @app.post("/api/jobs/{job_id}/status")
     def set_status(job_id: int, body: StatusBody):
-        if not store.set_status(job_id, body.status):
+        if body.reason and body.status != "dismissed":
+            raise HTTPException(422, "a reason only goes with status=dismissed")
+        before = store.get_job(job_id)
+        if not before:
             raise HTTPException(404, "job not found")
-        return {"id": job_id, "status": body.status}
+        touches_learning = "wrong_stack" in (before.get("dismiss_reason"), body.reason)
+        avoid_before = store.learned_avoid_skills() if touches_learning else None
+        store.set_status(job_id, body.status, body.reason or "")
+        rescored = 0
+        if touches_learning and store.learned_avoid_skills() != avoid_before:          # the set of technologies you pass on changed
+            profile = store.load_profile()
+            rescored = rescore(store, profile) if profile else 0
+        out = {"id": job_id, "status": body.status}
+        if body.reason:
+            out["reason"] = body.reason
+        if rescored:
+            out["rescored"] = rescored          # scores changed because the set of technologies you pass on changed
+        return out
+
+    # --------------------------------------------------- companies you hide / flag
+    @app.get("/api/companies/flags")
+    def get_flags():
+        return store.company_flags()
+
+    @app.post("/api/companies/flags", status_code=201)
+    def add_flag(body: FlagBody):
+        try:
+            store.flag_company(body.company, body.kind)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        return store.company_flags()
+
+    @app.delete("/api/companies/flags")
+    def remove_flag(company: str = Query(..., min_length=1, max_length=120), kind: Kind = "blocked"):
+        if not store.unflag_company(company, kind):
+            raise HTTPException(404, "that company is not on the list")
+        return store.company_flags()
+
+    # --------------------------------------------------------------- insights
+    @app.get("/api/insights/skills")
+    def skill_gaps(min_score: int = Query(50, ge=0, le=100)):
+        """Skills that keep showing up in your best matches (new + saved, tidy rules applied) but are not on your resume."""
+        profile = store.load_profile()
+        if not profile:
+            raise HTTPException(404, "no profile yet - upload a resume")
+        result = insights.skill_gaps(store.jobs_for_insight(min_score=min_score), profile)
+        result["min_score"] = min_score
+        return result
 
     @app.get("/api/stats")
-    def stats():
-        s = store.stats()
+    def stats(hide_old: bool = False, hide_agencies: bool = False):
+        s = store.stats(hide_old=hide_old, hide_agencies=hide_agencies)
         s["crawling"] = bool(store.running_run())
         return s
 

@@ -18,11 +18,16 @@ const SALARY_BUCKETS = [["0-5", "Under ₹5 LPA"], ["5-10", "₹5–10 LPA"], ["
 const SALARY_RANGES = SALARY_BUCKETS.map(([k]) => k).filter((k) => k !== "none");
 const SALARY_LABEL = Object.fromEntries(SALARY_BUCKETS);
 const PAGE = 30;
-const DEFAULTS = { q: "", min: "50", level: [], loc: [], src: [], status: "", days: "", sort: "score", company: "", lpa: [] };
+// old / agencies: true = SHOW them. The default (false) hides old postings and staffing agencies from the Active tab.
+const DEFAULTS = { q: "", min: "50", level: [], loc: [], src: [], status: "", days: "", sort: "score", company: "", lpa: [], old: false, agencies: false };
+const REASONS = [["wrong_stack", "Wrong tech stack"], ["too_senior", "Too senior"], ["location", "Location"], ["salary", "Salary"],
+                 ["agency", "Staffing agency"], ["company", "Hide this company"]];
+const REASON_LABEL = { wrong_stack: "wrong tech stack", too_senior: "too senior", location: "location", salary: "salary",
+                       agency: "staffing agency", company: "hidden company", other: "other" };
 
 const state = {
   f: { ...DEFAULTS, level: [], loc: [], src: [], lpa: [] },
-  items: [], total: 0, loading: false, error: null, reqId: 0,
+  items: [], total: 0, hidden: { old: 0, agencies: 0 }, loading: false, error: null, reqId: 0,
   stats: null, profile: null, sources: [],
   pollTimer: null, lastFocus: null,
 };
@@ -95,12 +100,19 @@ async function api(path, opts = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-let toastTimer;
-function toast(msg) {
-  const t = $("#toast");
-  t.textContent = msg; t.hidden = false;
+let toastTimer, toastMs = 3500;
+function armToast() {
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+  toastTimer = setTimeout(() => { $("#toast").hidden = true; }, toastMs);
+}
+// A toast may carry buttons (e.g. "why did you dismiss it?"); those stay longer and wait while the pointer or focus is on them.
+function toast(msg, actions, label = "Reason") {
+  const t = $("#toast");
+  t.replaceChildren(document.createTextNode(msg));
+  if (actions && actions.length) t.append(el("div", { class: "toast__actions", role: "group", "aria-label": label }, actions));
+  t.hidden = false;
+  toastMs = actions && actions.length ? 10000 : 3500;
+  armToast();
 }
 
 /* ------------------------------------------------------------ filter <-> URL */
@@ -127,6 +139,7 @@ function readUrl() {
   if (["saved", "applied", "dismissed"].includes(p.get("status"))) f.status = p.get("status");
   if (["1", "7", "30"].includes(p.get("days"))) f.days = p.get("days");
   if (["score", "newest", "company", "salary"].includes(p.get("sort"))) f.sort = p.get("sort");
+  f.old = p.get("old") === "1"; f.agencies = p.get("agencies") === "1";
   state.f = f;
 }
 
@@ -142,6 +155,8 @@ function writeUrl() {
   if (f.status) p.set("status", f.status);
   if (f.days) p.set("days", f.days);
   if (f.sort !== DEFAULTS.sort) p.set("sort", f.sort);
+  if (f.old) p.set("old", "1");
+  if (f.agencies) p.set("agencies", "1");
   const qs = p.toString();
   history.replaceState(null, "", qs ? `?${qs}` : location.pathname);
 }
@@ -157,7 +172,16 @@ function queryString(offset = 0) {
   if (f.src.length) p.set("source", f.src.join(","));
   if (f.status) p.set("status", f.status);
   if (f.days) p.set("days", f.days);
+  if (!f.old) p.set("hide_old", "true");
+  if (!f.agencies) p.set("hide_agencies", "true");
   p.set("sort", f.sort); p.set("limit", PAGE); p.set("offset", offset);
+  return p.toString();
+}
+
+function tidyQuery() {            // the same tidy-up switches, for the stats the sidebar counts come from
+  const p = new URLSearchParams();
+  if (!state.f.old) p.set("hide_old", "true");
+  if (!state.f.agencies) p.set("hide_agencies", "true");
   return p.toString();
 }
 
@@ -169,6 +193,7 @@ function syncControls() {
   $("#f-days").value = f.days;
   $$("#f-salary input").forEach((i) => { i.checked = f.lpa.includes(i.value); });
   $("#sort").value = f.sort;
+  $("#t-agencies").checked = !f.agencies; $("#t-old").checked = !f.old;
   $$("#f-score .seg__btn").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.value === f.min)));
   $$("#f-level input").forEach((i) => { i.checked = f.level.includes(i.value); });
   $$("#f-location input").forEach((i) => { i.checked = f.loc.includes(i.value); });
@@ -241,6 +266,25 @@ function renderChips() {
   f.loc.forEach((v) => add(v === "india" ? "India" : "Remote", () => toggleIn(f.loc, v, false)));
   f.src.forEach((v) => add(SOURCE_LABEL[v] || v, () => toggleIn(f.src, v, false)));
   if (f.days) add(f.days === "1" ? "Last 24h" : `Last ${f.days} days`, () => { f.days = ""; });
+  if (f.agencies) add("Showing staffing agencies", () => { f.agencies = false; });
+  if (f.old) add("Showing old postings", () => { f.old = false; });
+}
+
+function renderHidden() {
+  const f = state.f, h = state.hidden, active = !f.status;
+  const agencies = !f.agencies && active ? h.agencies : 0, old = !f.old && active ? h.old : 0;
+  $('[data-testid="hidden-agencies"]').textContent = agencies ? String(agencies) : "";
+  $('[data-testid="hidden-old"]').textContent = old ? String(old) : "";
+  const note = $("#hidden-note");
+  note.replaceChildren();
+  const bits = [];
+  if (old) bits.push([`${old} old or possibly closed posting${old === 1 ? "" : "s"}`, "old"]);
+  if (agencies) bits.push([`${agencies} staffing agency job${agencies === 1 ? "" : "s"}`, "agencies"]);
+  note.hidden = !bits.length;
+  bits.forEach(([text, key], i) => {
+    note.append(el("span", { text: `${i ? " · " : ""}${text} hidden` }),
+      el("button", { class: "link-btn", type: "button", "data-testid": `show-${key}`, onclick: () => { state.f[key] = true; refreshAll(); } }, "Show"));
+  });
 }
 
 /* --------------------------------------------------------------- rendering */
@@ -326,10 +370,20 @@ function breakdownEl(b) {
   const wrap = el("div", {}, box);
   if (b.cap != null) wrap.append(el("p", { class: "breakdown__cap", "data-testid": "score-cap",
     text: `Capped at ${b.cap}: the job's seniority or type is a poor fit for your profile, however well the skills match.` }));
+  if (b.avoided && b.avoided.length) wrap.append(el("p", { class: "breakdown__cap", "data-testid": "score-avoid",
+    text: `−${b.avoid_points} points: this job uses ${b.avoided.join(", ")}, which you said was the wrong tech stack for you.` }));
   return wrap;
 }
 
 function scoreColor(n) { return n >= 80 ? "green" : n >= 60 ? "blue" : n >= 40 ? "yellow" : "gray"; }
+
+function ageEl(job) {
+  const iso = job.posted_at || job.first_seen, txt = timeAgo(iso);
+  if (!txt) return null;
+  return el("span", { class: `age${job.old ? " age--old" : ""}`, "data-testid": "age",
+    title: job.posted_at ? `Posted ${job.posted_at.slice(0, 10)}` : "The posting has no date; this is when we first saw it",
+    text: job.posted_at ? txt : `seen ${txt}` });
+}
 
 function renderJob(job) {
   const url = safeUrl(job.url);
@@ -347,7 +401,7 @@ function renderJob(job) {
   const meta = el("div", { class: "job__meta" },
     el("span", { text: job.company }),
     job.location ? el("span", { text: job.location }) : null,
-    timeAgo(job.posted_at || job.first_seen) ? el("span", { text: timeAgo(job.posted_at || job.first_seen) }) : null,
+    ageEl(job),
     salaryEl(job),
   );
   const lvlColour = LEVEL_COLOR[job.level] || "gray";
@@ -357,6 +411,11 @@ function renderJob(job) {
     job.remote ? el("span", { class: "tag c-blue badge--remote", title: "Can be done remotely from India" }, "Remote") : null,
     job.status === "saved" ? el("span", { class: "tag c-blue badge--saved" }, "Saved") : null,
     applied ? el("span", { class: "tag c-green badge--applied" }, "Applied") : null,
+    job.agency ? el("span", { class: "tag c-orange badge--agency", title: job.agency, "data-testid": "agency-tag", text: "Staffing" }) : null,
+    job.possibly_closed
+      ? el("span", { class: "tag tag--dashed c-yellow badge--closed", title: "Not seen in a crawl for over a week while other jobs were, so it may have been filled", "data-testid": "closed-tag", text: "May be closed" })
+      : job.old ? el("span", { class: "tag c-yellow badge--old", title: "Posted more than 60 days ago; it may be filled or stale", "data-testid": "old-tag", text: "Old posting" }) : null,
+    dismissed && job.dismiss_reason ? el("span", { class: "tag c-gray badge--reason", "data-testid": "reason-tag", text: `Dismissed: ${REASON_LABEL[job.dismiss_reason] || job.dismiss_reason}` }) : null,
     (job.matched || []).slice(0, 4).map((m) => el("span", { class: "skill", text: m })),
     (job.tags || []).includes("via-search") ? el("span", { class: "tag tag--dashed c-yellow badge--preview", title: "Found through search; open the posting to confirm details and that it is still open", text: "Preview" }) : null,
     el("span", { class: "tag tag--src badge--src" }, el("i", { class: "dot", "data-src": job.source, "aria-hidden": "true" }), SOURCE_LABEL[job.source] || job.source),
@@ -418,17 +477,18 @@ async function loadJobs({ append = false } = {}) {
     if (id !== state.reqId) return; // a newer request superseded this one
     state.items = append ? state.items.concat(data.items) : data.items;
     state.total = data.total;
+    state.hidden = data.hidden || { old: 0, agencies: 0 };
   } catch (e) {
     if (id !== state.reqId) return;
     state.error = e.message;
   } finally {
-    if (id === state.reqId) { state.loading = false; renderList(); }
+    if (id === state.reqId) { state.loading = false; renderList(); renderHidden(); }
   }
 }
 
 async function loadStats() {
   try {
-    state.stats = await api("/api/stats");
+    state.stats = await api(`/api/stats?${tidyQuery()}`);
     state.sources = Object.entries(state.stats.by_source).sort((a, b) => b[1] - a[1]);
     renderStats();
     if ($$("#f-source input").length !== state.sources.length) { buildSourceFilter(); }
@@ -445,6 +505,10 @@ function refresh() {
   writeUrl(); syncControls(); renderChips(); loadJobs();
 }
 
+function refreshAll() {            // the tidy-up switches also change the counts shown in the sidebar and the stat cards
+  refresh(); loadStats();
+}
+
 function resetFilters() {
   state.f = { ...DEFAULTS, level: [], loc: [], src: [], lpa: [] };
   refresh();
@@ -459,7 +523,9 @@ async function setStatus(job, status) {
     const listed = state.items.find((j) => j.id === job.id);
     if (listed) listed.status = status;
     const labels = { saved: "Saved", applied: "Marked as applied (moved to the Applied tab)", dismissed: "Dismissed", new: "Restored" };
-    toast(`${labels[status]} — ${job.title}`);
+    job.dismiss_reason = "";                                           // a new status forgets the old reason
+    if (listed) listed.dismiss_reason = "";
+    toast(`${labels[status]} — ${job.title}`, status === "dismissed" ? reasonButtons(job) : null);
     // Jobs that no longer belong in the current tab disappear from the list.
     const tab = state.f.status;
     const stays = tab ? status === tab : status === "new" || status === "saved";      // Active = new + saved
@@ -471,6 +537,30 @@ async function setStatus(job, status) {
     loadStats();
     if (!$("#job-drawer").hidden && Number($("#job-drawer").dataset.id) === job.id) openJob(job.id, { keepFocus: true });
   } catch (e) { job.status = prev; toast(`Couldn’t update: ${e.message}`); }
+}
+
+function reasonButtons(job) {
+  const ask = el("span", { class: "toast__ask", text: "Why?" });
+  return [ask, ...REASONS.map(([key, label]) =>
+    el("button", { class: "toast__btn", type: "button", "data-testid": `reason-${key}`, onclick: () => giveReason(job, key) }, label))];
+}
+
+async function giveReason(job, reason) {
+  try {
+    const r = await api(`/api/jobs/${job.id}/status`, { method: "POST", body: JSON.stringify({ status: "dismissed", reason }) });
+    job.dismiss_reason = reason;
+    const listed = state.items.find((j) => j.id === job.id);
+    if (listed) listed.dismiss_reason = reason;
+    const msg = {
+      wrong_stack: r.rescored ? "Noted. Jobs using the technologies you pass on now score lower."
+                              : "Noted. Once two jobs with the same technology are marked this way, matching jobs will score lower.",
+      too_senior: "Noted.", location: "Noted.", salary: "Noted.",
+      agency: `Marked ${job.company} as a staffing agency. Its jobs are hidden while “Hide staffing agencies” is on.`,
+      company: `Hiding ${job.company}: its jobs won’t show in Active. You can undo this in Profile.`,
+    }[reason] || "Noted.";
+    toast(msg);
+    if (reason === "company" || reason === "agency" || r.rescored) { loadJobs(); loadStats(); }
+  } catch (e) { toast(`Couldn’t save the reason: ${e.message}`); }
 }
 
 function onApplyClick(job) {
@@ -566,6 +656,10 @@ async function openJob(id, { keepFocus = false } = {}) {
     row("Type", job.employment_type);
     row("Salary", job.salary_lpa ? `${job.salary_lpa}${job.salary_converted ? `  (listed as ${job.salary}; converted at approximate rates)` : ""}` : "Not listed");
     row("Source", SOURCE_LABEL[job.source] || job.source);
+    row("Staffing", job.agency);
+    if (job.old) row("Age", "Posted more than 60 days ago — it may be filled or stale");
+    if (job.possibly_closed) row("Status", "Not seen in a crawl for over a week — it may have been filled");
+    if (job.status === "dismissed" && job.dismiss_reason) row("Dismissed", REASON_LABEL[job.dismiss_reason] || job.dismiss_reason);
     body.append(facts);
     if (job.breakdown) body.append(el("h3", { class: "section-title", text: "How the score is made" }), breakdownEl(job.breakdown));
     if (job.reasons.length) body.append(el("h3", { class: "section-title", text: "Why it matches" }), el("ul", { class: "why" }, job.reasons.map((r) => el("li", { text: r }))));
@@ -578,6 +672,7 @@ async function openJob(id, { keepFocus = false } = {}) {
     foot.append(
       el("button", { class: "btn btn--secondary", type: "button", onclick: () => setStatus(job, saved ? "new" : "saved"), text: saved ? "Unsave" : "Save" }),
       el("button", { class: "btn btn--secondary", type: "button", onclick: () => setStatus(job, applied ? "new" : "applied"), text: applied ? "Unmark applied" : "Mark applied" }),
+      el("button", { class: "btn btn--secondary", type: "button", "data-testid": "drawer-dismiss", onclick: () => { closePanels(); setStatus(job, job.status === "dismissed" ? "new" : "dismissed"); }, text: job.status === "dismissed" ? "Restore" : "Dismiss" }),
       url ? el("a", { class: "btn btn--primary", href: url, target: "_blank", rel: "noopener noreferrer", "data-testid": "drawer-apply" }, "Apply on site", icon("arrow")) : null,
     );
     if (!keepFocus) openPanel(drawer);
@@ -609,7 +704,33 @@ async function openProfile() {
   $("#profile-msg").textContent = "";
   renderTags("#p-skills", draft.skills, "skill");
   renderTags("#p-exclude", draft.exclude, "keyword");
+  await loadFlags();
   openPanel($("#profile-drawer"));
+}
+
+/* Companies you hid / marked as staffing agencies. These save immediately (they are not part of "Save & re-match"). */
+async function loadFlags() {
+  try { renderFlags(await api("/api/companies/flags")); } catch (e) { toast(`Couldn’t load hidden companies: ${e.message}`); }
+}
+
+function renderFlags(flags) {
+  for (const [boxId, names, kind] of [["#p-blocked", flags.blocked, "blocked"], ["#p-agencies", flags.agencies, "agency"]]) {
+    const box = $(boxId); box.replaceChildren();
+    if (!names.length) { box.append(el("span", { class: "muted small", text: "None" })); continue; }
+    names.forEach((name) => {
+      const btn = el("button", { type: "button", "aria-label": `Stop ${kind === "blocked" ? "hiding" : "flagging"} ${name}`, onclick: () => changeFlag("DELETE", name, kind) });
+      btn.append(icon("x"));
+      box.append(el("span", { class: "chip-tag", "data-testid": "flag" }, name, btn));
+    });
+  }
+}
+
+async function changeFlag(method, company, kind) {
+  try {
+    const url = method === "DELETE" ? `/api/companies/flags?${new URLSearchParams({ company, kind })}` : "/api/companies/flags";
+    renderFlags(await api(url, method === "DELETE" ? { method } : { method, body: JSON.stringify({ company, kind }) }));
+    loadJobs(); loadStats();
+  } catch (e) { $("#profile-msg").textContent = `Couldn’t update: ${e.message}`; }
 }
 
 async function saveProfile() {
@@ -650,6 +771,120 @@ function addTag(inputId, list, boxId, prefix, lower) {
   renderTags(boxId, list, prefix);
 }
 
+/* ---------------------------------------------------------------- skill gaps */
+// The panel opens at once and fills in when the numbers arrive. "I know this" shows progress on the button, keeps your place in the
+// list, moves focus to the next skill, and offers Undo; a second click is ignored while one is still being saved.
+const gaps = { data: null, req: 0, busy: false };
+
+function gapsSkeleton() {
+  const body = $("#gaps-body");
+  body.setAttribute("aria-busy", "true");
+  body.replaceChildren(el("p", { class: "gaps__intro muted", role: "status", text: "Reading your best matches…" }),
+    el("div", { class: "gaps", "data-testid": "gaps-loading", "aria-hidden": "true" },
+      [0, 1, 2, 3].map(() => el("div", { class: "gap gap--skeleton" }, el("i"), el("i"), el("i")))));
+}
+
+async function openGaps() {
+  openPanel($("#gaps-drawer"));
+  gapsSkeleton();
+  await Promise.all([loadProfile(), loadGaps()]);
+}
+
+async function loadGaps({ focusAfter = null } = {}) {
+  const id = ++gaps.req, body = $("#gaps-body"), keep = body.scrollTop;
+  let data = null, failure = null;
+  try { data = await api("/api/insights/skills"); } catch (e) { failure = e; }
+  if (id !== gaps.req) return;                                    // a newer load superseded this one
+  gaps.data = data;
+  body.setAttribute("aria-busy", "false");
+  renderGaps(data, failure, focusAfter);
+  body.scrollTop = keep;                                          // stay where you were instead of jumping to the top
+}
+
+function renderGaps(data, failure, focusAfter) {
+  const body = $("#gaps-body"); body.replaceChildren();
+  if (failure) {
+    body.append(el("p", { class: "muted", text: failure.status === 404 ? "Upload your resume in Profile first, then this shows what your best matches ask for." : `Couldn’t load this: ${failure.message}` }));
+    if (failure.status !== 404) body.append(el("button", { class: "btn btn--secondary", type: "button", "data-testid": "gaps-retry", onclick: () => { gapsSkeleton(); loadGaps(); } }, "Try again"));
+    return;
+  }
+  body.append(el("p", { class: "gaps__intro", "data-testid": "gaps-intro",
+    text: data.jobs ? `Based on ${data.jobs} of your best matches (score ${data.min_score}+) that you haven’t acted on yet. These skills appear in several of them but aren’t on your resume.`
+                    : "There are no good matches to learn from yet. Refresh the jobs, or lower your filters." }));
+  if (data.jobs && !data.gaps.length) body.append(el("p", { class: "gaps__none", text: "No gaps: every technology that shows up repeatedly in your best matches is already on your resume." }));
+  if (data.gaps.length) {
+    const top = Math.max(...data.gaps.map((g) => g.share), 0.01);
+    body.append(el("h3", { class: "section-title", text: "On the jobs, not on your resume" }));
+    body.append(el("p", { class: "hint", text: "“I know this” adds the skill to your profile (your resume file is not changed) and re-matches your jobs. You can undo it right after, or remove it in Profile." }));
+    body.append(el("ul", { class: "gaps", "data-testid": "gaps-list" }, data.gaps.map((g) => {
+      const pct = Math.round(g.share * 100), width = Math.max(6, Math.round((g.share / top) * 100));      // bars are relative to the top skill, so they use the space
+      return el("li", { class: "gap", "data-skill": g.skill },
+        el("div", { class: "gap__top" },
+          el("strong", { class: "gap__name", text: g.skill }),
+          el("span", { class: "gap__n", text: `in ${g.jobs} of ${data.jobs} jobs (${pct}%)` })),
+        el("span", { class: "breakdown__bar c-violet", role: "img", "aria-label": `${g.skill}: wanted in ${pct}% of these jobs` }, el("i", { style: `width:${width}%` })),
+        el("div", { class: "gap__bottom" },
+          g.close_to.length ? el("span", { class: "muted small", text: `You know ${g.close_to.join(", ")}, which is close.` }) : el("span"),
+          el("span", { class: "gap__actions" },
+            el("button", { class: "link-btn", type: "button", "data-testid": "show-jobs", "aria-label": `Show jobs that mention ${g.skill}`, onclick: () => showJobsFor(g.skill) }, "Show jobs"),
+            el("button", { class: "btn btn--secondary btn--sm gap__add", type: "button", "data-testid": "add-skill", "aria-label": `I know ${g.skill}: add it to my skills`, onclick: (e) => addGapSkill(g.skill, e.currentTarget) }, "I know this")))
+      );
+    })));
+  }
+  if (data.have.length) {
+    body.append(el("h3", { class: "section-title", text: "Already on your resume and wanted" }));
+    body.append(el("div", { class: "job__tags", "data-testid": "gaps-have" }, data.have.map((h) =>
+      el("span", { class: `skill${h.skill === gaps.added ? " skill--new" : ""}`, text: `${h.skill} · ${h.jobs}` }))));
+  }
+  const target = (focusAfter && $(`.gap[data-skill="${CSS.escape(focusAfter)}"] .gap__add`)) || (focusAfter !== null && ($(".gap .gap__add") || $("#gaps-title")));
+  if (target) { if (target.id === "gaps-title") target.tabIndex = -1; target.focus({ preventScroll: false }); }
+}
+
+function showJobsFor(skill) {
+  state.f.q = skill;
+  closePanels();
+  refresh();
+  $("#results").focus({ preventScroll: false });
+}
+
+async function saveSkills(skills) {
+  const res = await api("/api/profile", { method: "PUT", body: JSON.stringify({ skills }) });
+  state.profile = res.profile;
+  return res;
+}
+
+async function addGapSkill(skill, btn) {
+  if (gaps.busy) return;                                          // one save at a time: each one re-matches every job
+  const list = gaps.data ? gaps.data.gaps : [], at = list.findIndex((g) => g.skill === skill);
+  const entry = list[at], next = list[at + 1] || list[at - 1];
+  gaps.busy = true;
+  $$("#gaps-body .gap__add").forEach((b) => { b.disabled = true; });
+  btn.replaceChildren(el("span", { class: "spinner", "aria-hidden": "true" }), "Adding…");
+  btn.setAttribute("aria-busy", "true");
+  try {
+    const before = state.profile ? state.profile.skills : [];
+    await saveSkills([...new Set([...before, skill])]);
+    gaps.added = skill;
+    toast(`Added ${skill} to your skills.${entry ? ` ${entry.jobs} of your best matches mention it.` : ""}`,
+      [el("button", { class: "toast__btn", type: "button", "data-testid": "undo-skill", onclick: () => removeGapSkill(skill, before) }, "Undo")], "Undo");
+    await loadGaps({ focusAfter: next ? next.skill : "" });
+    renderHero(); loadStats(); loadJobs();
+  } catch (e) {
+    toast(`Couldn’t add ${skill}: ${e.message}`);
+    $$("#gaps-body .gap__add").forEach((b) => { b.disabled = false; });
+    btn.replaceChildren("I know this"); btn.removeAttribute("aria-busy");
+  } finally { gaps.busy = false; gaps.added = null; }
+}
+
+async function removeGapSkill(skill, before) {
+  try {
+    await saveSkills((state.profile ? state.profile.skills : before).filter((s) => s !== skill));
+    toast(`Removed ${skill} from your skills.`);
+    if (!$("#gaps-drawer").hidden) await loadGaps();
+    renderHero(); loadStats(); loadJobs();
+  } catch (e) { toast(`Couldn’t undo: ${e.message}`); }
+}
+
 /* ------------------------------------------------------------------- wiring */
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
@@ -659,6 +894,21 @@ function wire() {
   $("#f-days").addEventListener("change", (e) => { state.f.days = e.target.value; refresh(); });
   $("#salary-all").addEventListener("click", () => { state.f.lpa = [...SALARY_RANGES]; refresh(); });
   $("#sort").addEventListener("change", (e) => { state.f.sort = e.target.value; refresh(); });
+  $("#t-agencies").addEventListener("change", (e) => { state.f.agencies = !e.target.checked; refreshAll(); });
+  $("#t-old").addEventListener("change", (e) => { state.f.old = !e.target.checked; refreshAll(); });
+  $("#open-gaps").addEventListener("click", openGaps);
+  $("#p-block-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const input = $("#p-block-input"), name = input.value.trim();
+    if (!name) return;
+    input.value = "";
+    changeFlag("POST", name, "blocked");
+  });
+  const toastBox = $("#toast");
+  toastBox.addEventListener("mouseenter", () => clearTimeout(toastTimer));      // don't take the buttons away while they're being read
+  toastBox.addEventListener("focusin", () => clearTimeout(toastTimer));
+  toastBox.addEventListener("mouseleave", armToast);
+  toastBox.addEventListener("focusout", armToast);
   $$("#f-score .seg__btn").forEach((b) => b.addEventListener("click", () => { state.f.min = b.dataset.value; refresh(); }));
   $$("#f-level input").forEach((i) => i.addEventListener("change", () => { toggleIn(state.f.level, i.value, i.checked); refresh(); }));
   $$("#f-location input").forEach((i) => i.addEventListener("change", () => { toggleIn(state.f.loc, i.value, i.checked); refresh(); }));

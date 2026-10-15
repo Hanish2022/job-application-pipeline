@@ -160,3 +160,39 @@ def test_breakdown_adds_up_to_the_score_and_respects_caps(profile):
 def test_no_realistic_job_reaches_100(profile):
     everything = "React Node.js Express MongoDB MySQL SQL JavaScript Python Java Docker AWS Git REST API HTML CSS Tailwind JWT " * 3
     assert _score(profile, "Full Stack Developer (0-2 years)", everything).score <= 99
+
+
+# ------------------------------------------------------------------ the fast skill scanner must answer exactly like the regex reference
+import random  # noqa: E402
+
+from app import skills as _skills  # noqa: E402
+
+
+@pytest.mark.parametrize("text", [
+    "", "   ", "React", "react.js and ReactJS", "React,react;React", "(react)", "react-native", "reactive", "preact", "xreact",
+    "node.js", "node.", "node.x", "node.js.", "nodejs/node", "c++", "c++11", "c#", "c# and c++", "ci/cd pipelines", "ci/cd.", "go", "let's go to market",
+    "java javascript", "javascript only", "mysql only", "postgresql", "sql, SQL; Sql", "js ts es6", "next.js nextjs", "web3", "k8s", "AWS S3", "aws.",
+    "react\nreact\r\nreact", "ÉCOLE react école", "react" * 3, "react react.", "react.2", ".react", "+react", "#react", "react+", "react#",
+])
+def test_fast_skill_scanner_matches_the_regex_reference(text):
+    assert _skills.count_skills(text) == _skills.count_skills_regex(text)
+
+
+def test_fast_skill_scanner_matches_the_regex_reference_on_random_text():
+    rng = random.Random(1234)
+    aliases = [a for al in _skills.SKILLS.values() for a in al]
+    glue = ["", " ", ".", "..", "+", "#", "-", "/", ",", "(", ")", "a", "9", "x.", ".y", "\n", "é", "_"]
+    for _ in range(3000):
+        text = "".join(rng.choice(aliases) + rng.choice(glue) for _ in range(rng.randint(1, 8)))
+        if rng.random() < .3:
+            text = text.upper()
+        assert _skills.count_skills(text) == _skills.count_skills_regex(text), repr(text)
+
+
+def test_skill_scanning_is_fast_enough_that_rescoring_the_whole_list_takes_seconds_not_half_a_minute():
+    import time
+    doc = ("We are hiring a full stack engineer to build with React, Node.js, TypeScript, Docker and AWS. " * 8 + "Lorem ipsum dolor sit amet " * 150)
+    start = time.perf_counter()
+    for _ in range(300):
+        _skills.count_skills(doc)
+    assert time.perf_counter() - start < 3.0          # ~0.1 s on a laptop; the old regex scan needed ~8 s for the same work

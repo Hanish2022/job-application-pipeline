@@ -77,6 +77,15 @@
           <div class="checks" id="f-source"></div>
         </fieldset>
 
+        <fieldset class="field" data-testid="tidy">
+          <legend class="field__label">Tidy up</legend>
+          <div class="checks" id="f-tidy">
+            <label class="check"><input type="checkbox" id="t-agencies" data-testid="hide-agencies" aria-labelledby="t-agencies-l" aria-describedby="t-agencies-n"><span id="t-agencies-l">Hide staffing agencies</span><span class="n" id="t-agencies-n" data-testid="hidden-agencies"></span></label>
+            <label class="check"><input type="checkbox" id="t-old" data-testid="hide-old" aria-labelledby="t-old-l" aria-describedby="t-old-n"><span id="t-old-l">Hide old postings</span><span class="n" id="t-old-n" data-testid="hidden-old"></span></label>
+          </div>
+          <p class="hint">Old = posted over 60 days ago, or not seen in a crawl for a week (it may be filled). Jobs you saved are never hidden. These only tidy the Active tab.</p>
+        </fieldset>
+
         <div class="field">
           <label class="field__label" for="f-days">Posted</label>
           <select id="f-days" class="input" data-testid="days">
@@ -103,6 +112,7 @@
             <button class="tab" role="tab" type="button" data-value="dismissed" aria-selected="false" data-testid="tab-dismissed">Dismissed <span class="tab__count" data-count="dismissed"></span></button>
           </div>
           <div class="toolbar__right">
+            <button class="btn btn--secondary btn--sm" id="open-gaps" type="button" data-testid="open-gaps" title="Technologies your best matches ask for that aren't on your resume"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M2 13V8M6 13V4M10 13V6.5M14 13V2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>Skill gaps</button>
             <label class="sr-only" for="sort">Sort by</label>
             <select id="sort" class="input input--sm" data-testid="sort">
               <option value="score">Best match</option>
@@ -115,6 +125,7 @@
 
         <div class="chips" id="chips" aria-label="Active filters" data-testid="chips"></div>
         <p class="count" id="count" role="status" aria-live="polite" data-testid="count"></p>
+        <p class="hidden-note" id="hidden-note" data-testid="hidden-note" hidden></p>
         <p class="legend" data-testid="score-legend" id="score-legend">
           <strong>Match score</strong> = how well a job fits your resume (0&ndash;100):
           <span class="legend__item"><i class="dot c-green" aria-hidden="true"></i>80+ great</span>
@@ -145,6 +156,19 @@
     </div>
     <div class="drawer__body" id="job-body"></div>
     <div class="drawer__foot" id="job-foot"></div>
+  </aside>
+
+  <aside class="drawer" id="gaps-drawer" role="dialog" aria-modal="true" aria-labelledby="gaps-title" hidden data-testid="gaps-drawer">
+    <div class="drawer__head">
+      <div>
+        <p class="eyebrow">Insight</p>
+        <h2 class="drawer__title" id="gaps-title">Skills your best matches want</h2>
+      </div>
+      <button class="icon-btn" type="button" data-close aria-label="Close skill gaps">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+    <div class="drawer__body" id="gaps-body" data-testid="gaps-body"></div>
   </aside>
 
   <aside class="drawer" id="profile-drawer" role="dialog" aria-modal="true" aria-labelledby="profile-title" hidden data-testid="profile-drawer">
@@ -200,6 +224,20 @@
           <input id="p-exclude-input" class="input" placeholder="e.g. sales" maxlength="40" autocomplete="off">
           <button class="btn btn--secondary" type="submit">Add</button>
         </form>
+      </div>
+      <div class="field">
+        <label class="field__label" for="p-block-input">Hidden companies</label>
+        <div class="tags" id="p-blocked" data-testid="blocked-companies"></div>
+        <form class="inline-form" id="p-block-form">
+          <input id="p-block-input" class="input" placeholder="A company you never want to see" maxlength="100" autocomplete="off">
+          <button class="btn btn--secondary" type="submit">Hide</button>
+        </form>
+        <p class="hint">Also set by dismissing a job and choosing “Hide this company”. Their jobs stay out of the Active tab; saved ones stay in Saved.</p>
+      </div>
+      <div class="field">
+        <span class="field__label">Marked as staffing agencies</span>
+        <div class="tags" id="p-agencies" data-testid="agency-companies"></div>
+        <p class="hint">Set by dismissing a job as “Staffing agency”. They are hidden while “Hide staffing agencies” is on.</p>
       </div>
       <p class="muted small" id="profile-msg" role="status" aria-live="polite"></p>
     </div>
