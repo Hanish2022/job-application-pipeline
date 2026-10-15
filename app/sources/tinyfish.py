@@ -6,6 +6,10 @@ Instead:
   2. For new, relevant-looking results, TinyFish *Fetch* renders the posting page and returns markdown,
      from which we read location, remote policy, pay, experience, posted date and the description.
 
+Besides search, Wellfound role pages (/role/r/<role>, /role/l/<role>/<place>) and YC job listings
+(ycombinator.com/jobs/role/<role>, /jobs/location/<place>) are read as *listing pages*: Wellfound lists are paged
+(?page=N, read breadth-first while pages still bring unseen jobs); YC lists are one page each.
+
 Trade-offs (be aware):
   * Search results can be cached/stale -> every fetched page is checked for closed-job markers and for age.
   * A fetch error ("bot_blocked", timeout…) does NOT prove a job is dead, so such results are kept as
@@ -33,7 +37,10 @@ PREVIEW_TAG = "via-search"
 SITES: dict[str, tuple[str, re.Pattern]] = {
     "wellfound.com": ("wellfound", re.compile(r"^https?://(?:www\.)?wellfound\.com/jobs/(\d+)", re.I)),
     "workatastartup.com": ("yc", re.compile(r"^https?://(?:www\.)?workatastartup\.com/jobs/(\d+)(?:$|[/?#])", re.I)),
+    # YC's current job pages:  https://www.ycombinator.com/companies/<company>/jobs/<7-char id>-<title-slug>
+    "ycombinator.com": ("yc", re.compile(r"^https?://(?:www\.)?ycombinator\.com/companies/([a-z0-9][\w.-]*/jobs/[A-Za-z0-9]+)(?:-[^/?#]*)?/?(?:$|[?#])", re.I)),
 }
+SLUG_TAG = "from-listing"      # internal: title (and YC company) were guessed from a URL slug; the fetched page replaces them
 
 GONE = re.compile(r"page[_ ]?not[_ ]?found|not[_ ]?found|\b404\b|\b410\b|gone", re.I)     # definitive: the URL no longer exists
 _DEAD = re.compile(
@@ -119,39 +126,111 @@ def parse_search(data: dict) -> list[Job]:
     return out
 
 
-_ROLE_PAGE_RE = re.compile(r"^https?://(?:www\.)?wellfound\.com/(?:role|location)/", re.I)
+_ROLE_PAGE_RE = re.compile(
+    r"^https?://(?:www\.)?(?:wellfound\.com/(?:role|location)/|ycombinator\.com/jobs/(?:role|location)/)", re.I)
 ROLE_PAGE_LIMIT = 10          # URLs per fetch request
+_PAGE_OF = re.compile(r"Page\s+\d+\s+of\s+(\d+)", re.I)
+_YC_SLUG = re.compile(r"^[A-Za-z0-9]{7}-")        # YC job slugs start with a 7-character id
+_LOCATIONISH = re.compile(r"[,/()]|\bremote\b|\bindia\b", re.I)
+
+
+def _alnum(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (text or "").lower())
+
+
+def _yc_listing_entries(text: str) -> list[tuple[str, str, str]]:
+    """YC listing page -> [(company+tagline, 'company•tagline+title', location)], one per job card.
+    A card is a '* ' bullet that ends with 'Apply'; its LAST detail line is the location."""
+    out = []
+    for block in re.split(r"(?m)^\* ", text or "")[1:]:
+        lines = [l.strip() for l in block.splitlines() if l.strip()]
+        if len(lines) < 4 or lines[-1].lower() != "apply":
+            continue
+        body = [l for l in lines[:-1] if l != "•"]
+        if len(body) >= 3:
+            out.append((_alnum(body[0]), _alnum(body[1]), body[-1]))
+    return out
 
 
 def job_links_from_page(result: dict) -> list[Job]:
-    """Preview Jobs for every individual Wellfound/YC posting linked from a fetched listing page (title from the URL slug)."""
+    """Preview Jobs for every individual Wellfound/YC posting linked from a fetched listing page.
+    The title comes from the URL slug (the fetched posting later replaces it). For YC the card's location is attached too, but
+    only when exactly one card matches the link's company AND title - anything less certain is left for the posting to say."""
     links = set(result.get("links") or [])
     links |= set(re.findall(r"\((https?://[^)\s]+)\)", result.get("text") or ""))
+    cards = _yc_listing_entries(result.get("text") or "")
     out: dict[str, Job] = {}
     for link in sorted(links):
         ident = identify(link)
-        if not ident or ident[0] != "wellfound":          # YC listing pages ignore filters (all return the same default list)
+        if not ident:
             continue
         source, ext_id, url = ident
         slug = url.rsplit("/", 1)[-1]
-        title = re.sub(r"^\d+-", "", slug).replace("-", " ").strip().title()
-        if title and url not in out:
-            out[url] = Job(source=source, external_id=ext_id, title=title, company="Unknown", url=url, board=source, tags=[PREVIEW_TAG])
+        slug = _YC_SLUG.sub("", slug) if source == "yc" and "/companies/" in url else re.sub(r"^\d+-", "", slug)
+        title = slug.replace("-", " ").strip().title()
+        if not title or title.isdigit() or url in out:        # old-style YC links (workatastartup.com/jobs/<id>) carry no title: nothing to judge them by
+            continue
+        company, location = "Unknown", ""
+        if source == "yc" and "/companies/" in url:
+            co_slug = url.split("/companies/")[1].split("/")[0]
+            company = co_slug.replace("-", " ").title()
+            want_title, want_co = _alnum(title), _alnum(co_slug)
+            hits = [c for c in cards if want_co and want_co in c[0] and c[1].endswith(want_title)]
+            if len(hits) == 1 and _LOCATIONISH.search(hits[0][2]):
+                location = hits[0][2]
+        out[url] = Job(source=source, external_id=ext_id, title=title, company=company, url=url, location=location,
+                       board=source, tags=[PREVIEW_TAG, SLUG_TAG])
     return list(out.values())
 
 
-async def harvest_role_pages(client, urls: list[str]) -> tuple[list[Job], int]:
-    """Fetch Wellfound role/listing pages and return the job postings they link to.  (jobs, pages_ok)"""
+def _page_url(url: str, page: int) -> str:
+    return url if page <= 1 else f"{url}{'&' if '?' in url else '?'}page={page}"
+
+
+def _total_pages(result: dict) -> Optional[int]:
+    m = _PAGE_OF.search((result.get("text") or "")[:600])
+    return int(m.group(1)) if m else None
+
+
+async def harvest_role_pages(client, urls: list[str], known: Optional[dict] = None, depth: int = 1, budget: Optional[int] = None,
+                             min_new: int = 8, errors: Optional[list] = None) -> tuple[list[Job], int, int]:
+    """Fetch listing pages and return the job postings they link to.   (jobs, pages_ok, pages_fetched)
+
+    Wellfound lists are long (e.g. 'Page 1 of 21'): after page 1 of every list, page N+1 of a list is requested only while page N
+    brought at least `min_new` jobs we had not seen, up to `depth` pages and the list's own page count. Pages are read breadth-first
+    (page 1 of everything, then page 2 of the productive lists, ...) so the `budget` (max page fetches per run) is spent fairly.
+    YC lists are a single page. A failing request ends the harvest but keeps what was already read."""
+    known = known or {}
     jobs: dict[str, Job] = {}
-    ok = 0
-    for i in range(0, len(urls), ROLE_PAGE_LIMIT):
-        chunk = urls[i : i + ROLE_PAGE_LIMIT]
-        data = await post_json(client, FETCH_URL, {"urls": chunk, "format": "markdown", "links": True}, headers=_headers())
-        for res in data.get("results", []):
+    ok = spent = 0
+    queue: list[tuple[str, int]] = [(u, 1) for u in urls]
+    while queue and (budget is None or spent < budget):
+        room = ROLE_PAGE_LIMIT if budget is None else min(ROLE_PAGE_LIMIT, budget - spent)
+        batch, queue = queue[:room], queue[room:]
+        requested = [_page_url(u, n) for u, n in batch]
+        try:
+            data = await post_json(client, FETCH_URL, {"urls": requested, "format": "markdown", "links": True}, headers=_headers())
+        except Exception as e:                       # noqa: BLE001 - keep what we have
+            if errors is not None:
+                errors.append(f"role pages: {type(e).__name__}: {e}")
+            break
+        spent += len(batch)
+        by_url = {(r.get("url") or ""): r for r in data.get("results", [])}
+        deeper: list[tuple[str, int]] = []
+        for (u, n), req in zip(batch, requested):
+            res = by_url.get(req)
+            if res is None:
+                continue
             ok += 1
-            for j in job_links_from_page(res):
+            page_jobs = job_links_from_page(res)
+            unseen = sum(1 for j in page_jobs if j.url not in known and j.url not in jobs)
+            for j in page_jobs:
                 jobs.setdefault(j.url, j)
-    return list(jobs.values()), ok
+            total = _total_pages(res)
+            if "wellfound.com" in u and n < depth and (total is None or n < total) and unseen >= min_new:
+                deeper.append((u, n + 1))
+        queue.extend(deeper)
+    return list(jobs.values()), ok, spent
 
 
 async def search(client, query: str, page: int = 0) -> list[Job]:
@@ -238,23 +317,66 @@ def _wf_header(text: str) -> dict:
     return out
 
 
-def parse_detail(text: str) -> dict:
-    """Pull structured fields out of a rendered posting (markdown). Missing fields are simply absent."""
+def _yc_v2(text: str) -> dict:
+    """ycombinator.com/companies/<co>/jobs/<id> layout:  '## Company', '# Title', then '[pay•equity•]location' and bold fields
+    (**Job type**, **Experience**, **Skills** ...), then '## About the role'.  The **Visa** field is YC boilerplate (it says
+    'US citizen/visa only' even on Bengaluru jobs), so it is never read and never reaches the description."""
+    if "**Job type**" not in text[:3000]:
+        return {}
+    out: dict = {}
+    m = re.search(r"^#\s+(?P<title>[^\n]+)\n+(?P<head>[^\n]*•[^\n]*)\n", text, re.M)
+    if m:
+        out["title"] = m.group("title").strip()
+        parts = [p.strip() for p in m.group("head").split("•") if p.strip()]
+        for part in parts:
+            if re.match(r"[₹$€£]\s*\d", part) and "salary" not in out:
+                out["salary"] = part
+        rest = [p for p in parts if not re.match(r"[₹$€£]\s*\d", p) and "%" not in p]
+        out["location"] = rest[-1] if rest else ""
+
+    def field(label: str) -> str:
+        f = re.search(rf"\*\*{label}\*\*\s*\n+\s*([^\n]+)", text[:3000], re.I)
+        return f.group(1).strip() if f else ""
+
+    out["employment_type"] = field("Job type")
+    out["experience"] = field("Experience")
+    out["skills"] = [x.strip() for x in field("Skills").split(",") if x.strip()][:12]
+    about = re.search(r"^##\s*About the role\s*\n(.*)", text, re.S | re.I | re.M)
+    if about:
+        out["body"] = about.group(1)
+    else:
+        after = re.search(r"Apply to [^\n]*\n(.*)", text, re.S)
+        out["body"] = after.group(1) if after else ""
+    return out
+
+
+def parse_detail(text: str, page_title: str = "") -> dict:
+    """Pull structured fields out of a rendered posting (markdown). Missing fields are simply absent.
+    page_title is the fetch response's title ('Role at Company • ...'); it is the most reliable source of title and company."""
     info: dict = {}
     if not text:
         return info
     head = text[:2500]
     lines = [l.strip() for l in text.splitlines() if l.strip()]
+    yc2 = _yc_v2(text)
     if lines:
         first = re.sub(r"\s*[·•]\s*[WSFX]\d{2}$", "", lines[0]).strip()
         at = re.search(r"\bat\s+(.+?)\s*\([WSFX]\d{2}\)\s*$", first)           # YC: "# Role at Company(W21)"
         if at:
             info["company"] = at.group(1).strip()[:80]
-        elif not first.startswith("#"):                                           # Wellfound: the first line is the company
+        elif yc2 and first.startswith("## "):                                     # new YC layout: "## Company"
+            info["company"] = first[3:].strip()[:80]
+        elif not first.startswith(("#", "*", "-", "|")):                          # Wellfound: the first line is the company (not a tag bullet)
             info["company"] = first[:80]
+    if page_title:
+        t, co, _ = parse_search_title(page_title)
+        if co:
+            info["company"], info["title"] = co[:80], t[:160]
+    if yc2.get("title") and not info.get("title"):
+        info["title"] = yc2["title"][:160]
     wf = _wf_header(text)
     hires_in = _after("Hires remotely in", text)
-    loc = wf.get("work_location") or ""                                     # Wellfound: "Remote – Everywhere" / "Remote – India" / "Onsite …"
+    loc = yc2.get("location") or wf.get("work_location") or ""                                     # Wellfound: "Remote – Everywhere" / "Remote – India" / "Onsite …"
     if loc.lower().startswith("remote") and loc.strip("– ").lower() == "remote" and hires_in:
         loc = f"Remote – {hires_in}"
     if not loc:
@@ -274,10 +396,10 @@ def parse_detail(text: str) -> dict:
             yc_exp = em.group(1) if em else ""
     loc = re.sub(r"\s+", " ", loc).strip()
     info["location"] = "" if re.fullmatch(r"[\W_]*", loc) else loc[:160]      # punctuation-only is not a location
-    if wf.get("experience"):
-        info["experience"] = wf["experience"]
-    if wf.get("employment_type"):
-        info["employment_type"] = wf["employment_type"]
+    if wf.get("experience") or yc2.get("experience"):
+        info["experience"] = wf.get("experience") or yc2["experience"]
+    if wf.get("employment_type") or yc2.get("employment_type"):
+        info["employment_type"] = wf.get("employment_type") or yc2["employment_type"]
     policy = _after("Remote Work Policy", text)
     info["remote_policy"] = policy
     m = re.search(r"No experience required|\d+\+?\s*(?:[-–]\s*\d+\s*)?(?:years?|yrs?) of (?:experience|exp)\b", head, re.I)
@@ -301,7 +423,10 @@ def parse_detail(text: str) -> dict:
         info["posted_at"] = relative_to_iso(m.group(1))
         info["posted_text"] = m.group(1).strip()
     m = _PAY_HEADER.search(head)
-    if m:
+    if yc2:
+        if yc2.get("salary"):
+            info["salary"] = yc2["salary"]
+    elif m:
         info["salary"] = m.group(0).strip()
     else:
         m = re.search(r"Compensation:\s*([^\n]+)", head, re.I)
@@ -310,8 +435,10 @@ def parse_detail(text: str) -> dict:
     skills = re.search(r"\n\s*Skills\s*\n+(.*?)(?:\n\s*##|\Z)", text, re.S)
     if skills:
         info["skills"] = [s.strip() for s in skills.group(1).splitlines() if s.strip()][:12]
+    if yc2.get("skills"):
+        info["skills"] = yc2["skills"]
     about = re.search(r"##\s*About the job\s*(.*)", text, re.S | re.I)
-    body = (about.group(1) if about else text).strip()
+    body = (yc2["body"] if yc2 else about.group(1) if about else text).strip()
     info["description"] = re.sub(r"\\\*+|\*{2,}", "", re.sub(r"\n{3,}", "\n\n", body))[: config.MAX_DESCRIPTION_CHARS]
     dead = _DEAD.search(head)
     info["dead"] = bool(dead)
@@ -320,8 +447,11 @@ def parse_detail(text: str) -> dict:
 
 def apply_detail(job: Job, info: dict) -> Job:
     """Merge parsed page details into a preview Job (keeps the search data where the page is silent)."""
-    if info.get("company") and job.company in ("", "Unknown"):
+    guessed = SLUG_TAG in job.tags                     # title/company came from a URL slug: the page knows better
+    if info.get("company") and (guessed or job.company in ("", "Unknown")):
         job.company = info["company"]
+    if info.get("title") and guessed:
+        job.title = info["title"]
     loc = info.get("location") or ""
     policy = (info.get("remote_policy") or "").lower()
     if policy.startswith("remote") and "remote" not in loc.lower():
@@ -344,7 +474,7 @@ def apply_detail(job: Job, info: dict) -> Job:
         job.salary = info["salary"]
     if info.get("employment_type"):
         job.employment_type = info["employment_type"]
-    tags = [t for t in job.tags if t != PREVIEW_TAG]
+    tags = [t for t in job.tags if t not in (PREVIEW_TAG, SLUG_TAG)]
     if re.search(r"no experience required|new grads? ok", info.get("experience", ""), re.I):
         tags.append("Entry-level")
     if re.search(r"intern", info.get("employment_type", ""), re.I):
@@ -360,7 +490,7 @@ async def fetch_details(client, urls: list[str]) -> tuple[dict[str, dict], dict[
     ok = {}
     for r in data.get("results", []):
         key = (r.get("url") or "").split("?")[0]
-        ok[key] = parse_detail(r.get("text") or "")
+        ok[key] = parse_detail(r.get("text") or "", r.get("title") or "")
     errs = {(e.get("url") or "").split("?")[0]: str(e.get("error")) for e in data.get("errors", [])}
     return ok, errs
 
@@ -391,7 +521,8 @@ async def discover(
     max_age_days = int(cfg.get("max_age_days", 90))
     counters = {"queries": len(queries), "found": 0, "new": 0, "fetched": 0, "dead": 0, "stale": 0,
                 "us_only": 0, "preview_only": 0, "search_errors": 0, "city_label_ignored": 0,
-                "search_calls": 0, "paging_stopped": 0, "role_pages_ok": 0, "role_jobs": 0, "gone": 0}
+                "search_calls": 0, "paging_stopped": 0, "role_pages_ok": 0, "role_pages_fetched": 0, "role_jobs": 0, "gone": 0,
+                "listing_skipped": 0}
 
     found: dict[str, Job] = {}
     min_new = int(cfg.get("page_min_new", 2))       # keep paging a query only while a page still brings this many unseen jobs
@@ -418,19 +549,28 @@ async def discover(
 
     role_pages = [u for u in cfg.get("role_pages", []) if _ROLE_PAGE_RE.match(u)]
     if role_pages:
+        errs: list = []
         try:
-            listed, ok = await harvest_role_pages(client, role_pages)
-            counters["role_pages_ok"] = ok
+            listed, ok, spent = await harvest_role_pages(
+                client, role_pages, known={**known, **{u: True for u in found}}, depth=int(cfg.get("listing_depth", 1)),
+                budget=int(cfg["listing_budget"]) if cfg.get("listing_budget") else None,
+                min_new=int(cfg.get("listing_min_new", 8)), errors=errs)
+            counters["role_pages_ok"], counters["role_pages_fetched"] = ok, spent
             counters["role_jobs"] = sum(1 for j in listed if j.url not in found)
             for j in listed:
                 found.setdefault(j.url, j)
         except Exception as e:
-            info.setdefault("errors", []).append(f"role pages: {type(e).__name__}: {e}")
+            errs.append(f"role pages: {type(e).__name__}: {e}")
+        info.setdefault("errors", []).extend(errs)
     counters["found"] = len(found)
     info["seen_urls"] = list(found)
 
     # Keep only engineering-looking titles; known-good jobs are skipped (already have details).
     fresh = [j for j in found.values() if not known.get(j.url) and _title_ok(j, relevant)]
+    # A YC listing card states its own location. If that is not somewhere we can work from (e.g. 'Remote (US)'), don't pay to open it.
+    usable = [j for j in fresh if not (SLUG_TAG in j.tags and j.source == "yc" and j.location and not relevant(j))]
+    counters["listing_skipped"] = len(fresh) - len(usable)
+    fresh = usable
     fresh.sort(key=fetch_priority)                                   # stable: promising ones first if the fetch cap bites
     fresh = interleave_by_source(fresh)                              # ...but every source gets its fair share of the cap
     counters["new"] = len(fresh)
@@ -472,6 +612,7 @@ async def discover(
     # Previews are only worth keeping when the search result already told us the location is usable.
     for j in previews:
         if j.location and relevant(j) and looks_us_only(j) is False:
+            j.tags = [t for t in j.tags if t != SLUG_TAG]        # internal marker; the title stays slug-style until the page is read
             out.append(j)
             counters["preview_only"] += 1
     info.update(counters)
@@ -488,6 +629,7 @@ def _title_ok(job: Job, relevant: Callable[[Job], bool]) -> bool:
     return relevant(probe)
 
 
+_SENIOR = re.compile(r"\b(senior|sr\.?|staff|principal|lead|head|director|vp|manager|architect|founding)\b", re.I)
 _EARLY_CAREER = re.compile(r"\b(intern(?:ship)?|junior|jr\.?|graduate|new grad|fresher|entry[- ]level|associate|trainee|sde[- ]?(?:1|i)\b|engineer[- ]?(?:1|i)\b)", re.I)
 
 
@@ -507,11 +649,15 @@ def interleave_by_source(jobs: list[Job]) -> list[Job]:
 
 def fetch_priority(job: Job) -> int:
     """Lower = fetch sooner, when the per-run cap means we can't fetch everything.
-       0: the search label already says India/remote      1: early-career title      2: everything else"""
+       0: the label already says India/remote      1: early-career title      2: everything else      3: senior/staff/lead/manager
+       (senior roles are fetched last: they score low for a fresher, so they should not use up the per-run budget first)"""
     from ..textutil import is_india, looks_remote     # local import: textutil is tiny and has no cycles
+    title = job.title or ""
+    if _SENIOR.search(title) and not _EARLY_CAREER.search(title):
+        return 3
     if is_india(job.location) or looks_remote(job.location):
         return 0
-    return 1 if _EARLY_CAREER.search(job.title or "") else 2
+    return 1 if _EARLY_CAREER.search(title) else 2
 
 
 def _age_days(iso: str) -> float:

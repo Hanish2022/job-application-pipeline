@@ -335,10 +335,17 @@ Neither site has a public jobs API and this project never logs in to them. Inste
 through two discovery channels that feed the same pipeline:
 
 1. **Search** returns public posting URLs for queries such as `site:wellfound.com/jobs "junior" "full stack" remote`
-   (20 queries in `companies.json` → `aggregators.tinyfish.queries`; edit freely). Deeper result pages are only requested while
+   (22 queries in `companies.json` → `aggregators.tinyfish.queries`; edit freely). Deeper result pages are only requested while
    a page still brings jobs we haven't seen, so daily runs stay cheap.
-2. **Listing pages** (`role_pages`, e.g. `wellfound.com/role/r/full-stack-developer`, `…/role/l/software-engineer/india`): one fetch returns up to
-   ~50 current postings. (YC's listing pages ignore filters, so YC is covered through search only.)
+2. **Listing pages** (`role_pages`) are read directly, and are where most of the coverage comes from:
+   - **Wellfound** (`wellfound.com/role/r/<role>`, `…/role/l/<role>/india`): a list holds hundreds of jobs (one India list said
+     *"708 results, page 1 of 21"*). Page 1 of every list is read first, then page 2, 3, … of a list only while the previous page
+     still brought `listing_min_new` unseen jobs, up to `listing_depth` pages, and never more than `listing_budget` page fetches per run.
+   - **YC** (`ycombinator.com/jobs/role/<role>`, `…/jobs/location/<place>`): one page per list (YC's paging only repeats page 1).
+     YC's job pages now live at `ycombinator.com/companies/<company>/jobs/<id>` (the older `workatastartup.com/jobs/<id>` form is
+     still understood). Each listing card shows its own location, so a card that says `Remote (US)` is skipped **without
+     spending a fetch**; a card is only trusted when exactly one card matches the link's company and title.
+   - Before adding a list, check it: an unknown role slug silently returns the site's default list, which is a wasted fetch.
 
 Every new candidate is then **opened and judged on the real page**, not on its search-result label. This matters: Wellfound labels a
 search result with the *company's* home city ("Junior Full-Stack Developer at Nexorlio • Las Vegas") even when the job itself is
@@ -348,8 +355,15 @@ LPA-tagged like any other.
 
 Guards against stale/wrong results: closed-job text, postings older than `max_age_days`, US-work-authorisation-only roles and
 non-engineering titles are dropped; a page that is permanently gone (`page_not_found`) is remembered and never fetched again; a
-temporary failure (`bot_blocked`, timeout) is kept as a **Preview** and retried next run. The per-run fetch budget (`max_fetch`) is
-shared fairly between Wellfound and YC (round-robin), and promising candidates (India/remote, junior titles) are read first.
+temporary failure (`bot_blocked`, timeout) is kept as a **Preview** and retried next run. The per-run fetch budget (`max_fetch`, 100) is
+shared fairly between Wellfound and YC (round-robin); promising candidates (India/remote, junior titles) are opened first and
+senior/staff/lead/manager titles last.
+
+**Why a job can be missing, honestly.** Both sites list far more jobs than one run opens. The first runs find ~1,000 new
+candidates and open ~100 per run, so the backlog drains over several days (each run is cheap once pages are known). If a job you
+saw on Wellfound or YC is not here yet it is most likely waiting its turn; run *Refresh jobs* again, or raise `max_fetch`. Jobs that
+need a login to see, and anything Wellfound blocks (`bot_blocked`), are retried on later runs. TinyFish usage per run is roughly
+`search_calls` + `role_pages_fetched` (≤ `listing_budget`) + `fetched` (≤ `max_fetch`); lower those three numbers if you hit a limit.
 Jobs that stop appearing in search for `close_after_days` are closed.
 
 **See what a run did.** After `crawl`, the last run's log shows what the TinyFish source did (search calls, listing-page jobs,

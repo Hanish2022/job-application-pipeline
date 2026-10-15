@@ -570,9 +570,10 @@ ROLE_RESULT = {"url": ROLE_URL, "text": "# Remote Full Stack Developer Jobs\n\n#
                          "https://wellfound.com/role/r/react-developer", "https://www.workatastartup.com/jobs/100954", "https://example.com/jobs/5"]}
 
 
-def test_job_links_are_harvested_from_a_wellfound_listing_page_only():
+def test_job_links_are_harvested_from_a_listing_page_and_only_job_links():
     jobs = tf.job_links_from_page(ROLE_RESULT)
-    assert sorted(j.url for j in jobs) == sorted([NEXORLIO_URL, "https://wellfound.com/jobs/1742128-full-stack-developer"])   # no company/role/YC/other links
+    assert sorted(j.url for j in jobs) == sorted([NEXORLIO_URL, "https://wellfound.com/jobs/1742128-full-stack-developer"])   # no company / role / other-site links
+    #                                               ...and no title-less old-style YC link (workatastartup.com/jobs/100954): nothing to judge it by
     nex = next(j for j in jobs if j.external_id == "4803694")
     assert nex.title == "Junior Full Stack Developer" and nex.source == "wellfound" and tf.PREVIEW_TAG in nex.tags
     assert tf.job_links_from_page({"url": ROLE_URL, "text": "[Dev](https://wellfound.com/jobs/77-dev) and (https://wellfound.com/jobs/77-dev)"})[0].external_id == "77"
@@ -721,3 +722,342 @@ def test_a_removed_posting_is_remembered_but_a_temporary_failure_is_retried(stor
 @pytest.mark.parametrize("err,gone", [("page_not_found", True), ("HTTP 404", True), ("410 Gone", True), ("bot_blocked", False), ("timeout", False), ("", False)])
 def test_which_fetch_errors_count_as_a_removed_posting(err, gone):
     assert bool(tf.GONE.search(err)) is gone
+
+
+# ============================================================================ coverage: YC's current URLs + page layout
+YC_V2 = "https://www.ycombinator.com/companies/vahan/jobs/7zvIddz-lead-ai-engineer"
+YC_V2_PAGE = """## Vahan
+
+AI recruiter for India's massive blue-collar workforce
+
+# Lead AI Engineer
+
+₹3M - ₹6M INR•Bengaluru, KA, IN / Bengaluru, Karnataka, IN
+
+**Job type**
+
+Full-time
+
+**Role**
+
+Engineering, Data science
+
+**Experience**
+
+6+ years
+
+**Visa**
+
+US citizen/visa only
+
+**Skills**
+
+Python, LLMs, RAG, Fine-tuning, AI Agents
+
+Apply to Vahan and hundreds of other fast-growing YC startups with a single profile.
+
+Apply to role ›
+
+## About the role
+
+Build voice agents that recruit blue-collar workers across India.
+"""
+YC_V2_NEWGRAD = """## FirstWork
+
+Rippling for seasonal workers
+
+# Software Engineer
+
+•Remote (India)
+
+**Job type**
+
+Full-time
+
+**Role**
+
+Engineering, Full stack
+
+**Experience**
+
+Any (new grads ok)
+
+**Visa**
+
+US citizen/visa only
+
+Connect directly with founders of the best YC-funded startups.
+
+Apply to role ›
+
+Shubham Choudhary
+
+CTO
+
+## About the role
+
+FirstWork is building agentic AI products for frontline hiring.
+"""
+
+
+@pytest.mark.parametrize("url,ext", [
+    (YC_V2, "vahan/jobs/7zvIddz"),
+    ("https://ycombinator.com/companies/firstwork/jobs/CaWvqIS-software-engineer?utm=x#top", "firstwork/jobs/CaWvqIS"),
+    ("https://www.ycombinator.com/companies/turing-labs-inc/jobs/Z8ebn77", "turing-labs-inc/jobs/Z8ebn77"),
+])
+def test_identify_current_yc_job_urls(url, ext):
+    source, ext_id, clean = tf.identify(url)
+    assert (source, ext_id) == ("yc", ext) and "?" not in clean and "#" not in clean
+
+
+@pytest.mark.parametrize("bad", [
+    "https://www.ycombinator.com/companies/vahan", "https://www.ycombinator.com/companies/vahan/jobs",
+    "https://www.ycombinator.com/jobs/role/software-engineer", "https://www.ycombinator.com/jobs/location/india",
+    "https://www.ycombinator.com/companies/vahan/founders", "https://evil.example/companies/vahan/jobs/7zvIddz-x",
+    "https://ycombinator.com.evil.example/companies/vahan/jobs/7zvIddz-x",
+])
+def test_identify_rejects_yc_listing_company_and_lookalike_urls(bad):
+    assert tf.identify(bad) is None, bad
+
+
+def test_new_yc_page_layout_is_parsed_and_the_visa_boilerplate_is_ignored():
+    d = tf.parse_detail(YC_V2_PAGE, "Lead AI Engineer at Vahan | Y Combinator")
+    assert (d["company"], d["title"]) == ("Vahan", "Lead AI Engineer")
+    assert d["location"] == "Bengaluru, KA, IN / Bengaluru, Karnataka, IN" and d["salary"] == "₹3M - ₹6M INR"
+    assert d["employment_type"] == "Full-time" and d["experience"] == "6+ years" and d["skills"][:2] == ["Python", "LLMs"]
+    assert "US citizen" not in d["description"] and d["description"].startswith("Build voice agents")
+    job = tf.apply_detail(make_job(source="yc", title="Lead Ai Engineer", company="Vahan", location="", tags=[tf.PREVIEW_TAG]), d)
+    assert not tf.looks_us_only(job) and relevant_india(job)           # the 'US citizen/visa only' line on every page must not drop India jobs
+
+
+def test_new_yc_page_without_pay_and_with_new_grads_ok():
+    d = tf.parse_detail(YC_V2_NEWGRAD, "Software Engineer at FirstWork | Y Combinator")
+    assert d["location"] == "Remote (India)" and "salary" not in d and d["experience"] == "Any (new grads ok)"
+    job = tf.apply_detail(make_job(source="yc", title="Software Engineer", company="x", location="", tags=[tf.PREVIEW_TAG]), d)
+    assert job.remote is True and "Entry-level" in job.tags and relevant_india(job)
+
+
+def test_new_yc_page_with_equity_and_a_us_city_is_not_usable_from_india():
+    page = YC_V2_PAGE.replace("₹3M - ₹6M INR•Bengaluru, KA, IN / Bengaluru, Karnataka, IN", "$130K - $210K•0.10% - 0.40%•Palo Alto, CA / San Francisco, CA, US")
+    d = tf.parse_detail(page)
+    assert d["salary"] == "$130K - $210K" and d["location"] == "Palo Alto, CA / San Francisco, CA, US"
+    job = tf.apply_detail(make_job(source="yc", title="Engineer", location="", tags=[tf.PREVIEW_TAG]), d)
+    assert not relevant_india(job)
+
+
+def test_page_title_gives_the_real_title_and_company_for_every_layout():
+    body = "# Dev\n\nLocationPune, IN\n"
+    assert tf.parse_detail(body, "Full stack Developer (Canadian Only) at Emaww • Montreal • Remote (Work from Home)")["company"] == "Emaww"
+    assert tf.parse_detail(body, "Product Engineer (Full-Time, Remote — India) at AnswerThis | Y Combinator's Work at a Startup")["title"] == \
+        "Product Engineer (Full-Time, Remote — India)"
+    assert "company" not in tf.parse_detail(body, "Wellfound jobs")                         # no 'at Company' => nothing invented
+
+
+def test_a_wellfound_tag_bullet_is_never_taken_for_the_company():
+    page = "* B2B\n* Early StageStartup in initial stages\n\n# Full stack Developer (Canadian Only)\n\n* Remote ()\n* |No experience required\n"
+    assert "company" not in tf.parse_detail(page)                                            # was '* B2B'
+    assert tf.parse_detail(page, "Full stack Developer (Canadian Only) at Emaww • Montreal")["company"] == "Emaww"
+
+
+# ------------------------------------------------------------------------- YC listing pages
+YC_LISTING_URL = "https://www.ycombinator.com/jobs/location/india"
+YC_LISTING = """# Jobs at Y Combinator startups in India
+
+## India startup jobs added recently
+
+* FirstWork (S24)Rippling for seasonal workers
+
+  FirstWork (S24)•Rippling for seasonal workersSenior Software Engineer
+
+  Full-time
+
+  •
+
+  Engineering
+
+  •
+
+  Full stack
+
+  •
+
+  Remote (US)
+
+  Apply
+* Vahan (S19)AI recruiter for India's massive blue-collar workforce
+
+  Vahan (S19)•AI recruiter for India's massive blue-collar workforce(25 days ago)Lead AI Engineer
+
+  Full-time
+
+  •
+
+  Engineering
+
+  •
+
+  Data science
+
+  •
+
+  ₹3M - ₹6M INR
+
+  •
+
+  Bengaluru, KA, IN / Bengaluru, Karnataka, IN
+
+  Apply
+"""
+YC_SENIOR = "https://www.ycombinator.com/companies/firstwork/jobs/sRQFKmZ-senior-software-engineer"
+YC_LISTING_LINKS = [YC_SENIOR, YC_V2, "https://www.ycombinator.com/companies/vahan", "https://www.ycombinator.com/jobs/role/software-engineer"]
+
+
+def test_yc_listing_cards_give_each_job_its_location_when_company_and_title_match():
+    jobs = {j.url: j for j in tf.job_links_from_page({"text": YC_LISTING, "links": YC_LISTING_LINKS})}
+    assert set(jobs) == {YC_SENIOR, YC_V2}                                                   # company page + listing page links are not jobs
+    assert jobs[YC_V2].location.startswith("Bengaluru, KA, IN") and jobs[YC_V2].title == "Lead Ai Engineer" and jobs[YC_V2].company == "Vahan"
+    assert jobs[YC_SENIOR].location == "Remote (US)" and not relevant_india(jobs[YC_SENIOR])
+    assert all(tf.SLUG_TAG in j.tags and tf.PREVIEW_TAG in j.tags for j in jobs.values())
+
+
+def test_a_listing_card_is_not_used_when_it_could_belong_to_a_different_job():
+    vahan_card = YC_LISTING.split("* Vahan")[1]
+    twin = YC_LISTING + "* Vahan" + vahan_card                                              # two identical Vahan 'Lead AI Engineer' cards
+    jobs = {j.url: j for j in tf.job_links_from_page({"text": twin, "links": YC_LISTING_LINKS})}
+    assert jobs[YC_V2].location == ""                                                        # ambiguous -> let the fetched posting decide
+    assert all(j.location == "" for j in tf.job_links_from_page({"text": "no cards here", "links": YC_LISTING_LINKS}))
+
+
+@respx.mock
+def test_yc_listing_jobs_that_say_remote_us_are_not_fetched_and_the_rest_are():
+    respx.get(tf.SEARCH_URL).mock(return_value=httpx.Response(200, json=results()))
+    fetched = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body.get("links"):
+            return httpx.Response(200, json={"results": [{"url": YC_LISTING_URL, "text": YC_LISTING, "links": YC_LISTING_LINKS}], "errors": []})
+        fetched.extend(body["urls"])
+        return httpx.Response(200, json={"results": [{"url": u, "text": YC_V2_PAGE, "title": "Lead AI Engineer at Vahan | Y Combinator"} for u in body["urls"]], "errors": []})
+
+    respx.post(tf.FETCH_URL).mock(side_effect=handler)
+    info = {}
+    jobs = run(_discover(cfg={**CFG, "role_pages": [YC_LISTING_URL]}, info=info))
+    assert fetched == [YC_V2]                                                                # the 'Remote (US)' card was never opened
+    assert [j.url for j in jobs] == [YC_V2] and jobs[0].title == "Lead AI Engineer" and jobs[0].company == "Vahan"       # real title, not the slug
+    assert tf.SLUG_TAG not in jobs[0].tags and tf.PREVIEW_TAG not in jobs[0].tags
+    assert info["listing_skipped"] == 1 and info["fetched"] == 1 and info["role_jobs"] == 2
+
+
+# ------------------------------------------------------------------------- Wellfound listing pagination
+PAGED = "https://wellfound.com/role/l/software-engineer/india"
+
+
+def _wf_listing(page, n=10, total=21):
+    return {"url": None, "text": f"# Software Engineer Jobs in India\n\n#### Page {page} of {total}\n",
+            "links": [f"https://wellfound.com/jobs/{page}{i:03d}-software-engineer" for i in range(n)]}
+
+
+def _paged_handler(per_page, total=21, calls=None):
+    def handler(request):
+        body = json.loads(request.content)
+        calls.append(body["urls"])
+        out = []
+        for u in body["urls"]:
+            page = int(u.split("page=")[1]) if "page=" in u else 1
+            r = _wf_listing(page, per_page(page), total)
+            r["url"] = u
+            out.append(r)
+        return httpx.Response(200, json={"results": out, "errors": []})
+    return handler
+
+
+async def _harvest(*args, **kw):
+    async with make_client() as c:
+        return await tf.harvest_role_pages(c, *args, **kw)
+
+
+@respx.mock
+def test_listing_pages_are_read_deeper_while_each_page_brings_new_jobs():
+    calls = []
+    respx.post(tf.FETCH_URL).mock(side_effect=_paged_handler(lambda p: 10, calls=calls))
+    jobs, ok, spent = run(_harvest([PAGED], depth=4, min_new=8))
+    assert (spent, ok, len(jobs)) == (4, 4, 40)
+    assert [c[0] for c in calls] == [PAGED, PAGED + "?page=2", PAGED + "?page=3", PAGED + "?page=4"]      # stopped at the depth cap
+
+
+@respx.mock
+def test_paging_stops_as_soon_as_a_page_is_mostly_known():
+    calls = []
+    known = {f"https://wellfound.com/jobs/2{i:03d}-software-engineer": True for i in range(10)}              # page 2 is all old news
+    respx.post(tf.FETCH_URL).mock(side_effect=_paged_handler(lambda p: 10, calls=calls))
+    _, _, spent = run(_harvest([PAGED], known=known, depth=9, min_new=8))
+    assert spent == 2 and len(calls) == 2                                                                  # page 1 (new) -> page 2 (known) -> stop
+
+
+@respx.mock
+def test_paging_never_goes_past_the_page_count_the_site_reports():
+    calls = []
+    respx.post(tf.FETCH_URL).mock(side_effect=_paged_handler(lambda p: 10, total=3, calls=calls))
+    _, _, spent = run(_harvest([PAGED], depth=9, min_new=1))
+    assert spent == 3
+
+
+@respx.mock
+def test_the_page_budget_is_shared_breadth_first_and_is_a_hard_cap():
+    calls = []
+    other = "https://wellfound.com/role/r/ai-engineer"
+    respx.post(tf.FETCH_URL).mock(side_effect=_paged_handler(lambda p: 10, calls=calls))
+    _, _, spent = run(_harvest([PAGED, other], depth=9, min_new=1, budget=5))
+    flat = [u for c in calls for u in c]
+    assert spent == 5 and len(flat) == 5
+    assert flat[:2] == [PAGED, other]                                                                      # page 1 of BOTH lists before any page 2
+    assert sum("page=" in u for u in flat) == 3
+
+
+@respx.mock
+def test_yc_listing_pages_are_never_paged():
+    respx.post(tf.FETCH_URL).mock(side_effect=lambda req: httpx.Response(
+        200, json={"results": [{"url": YC_LISTING_URL, "text": YC_LISTING, "links": YC_LISTING_LINKS}], "errors": []}))
+    _, _, spent = run(_harvest([YC_LISTING_URL], depth=9, min_new=0))
+    assert spent == 1                                                                                      # YC ?page=2 only repeats page 1
+
+
+@respx.mock
+def test_a_failing_page_request_keeps_what_was_already_read():
+    errors = []
+    answers = iter([httpx.Response(200, json={"results": [{**_wf_listing(1), "url": PAGED}], "errors": []}), httpx.Response(500, text="boom")])
+    respx.post(tf.FETCH_URL).mock(side_effect=lambda req: next(answers))
+    jobs, ok, _ = run(_harvest([PAGED], depth=5, min_new=1, errors=errors))
+    assert len(jobs) == 10 and ok == 1 and errors and "role pages" in errors[0]
+
+
+@respx.mock
+def test_discover_reads_the_listing_depth_and_budget_from_config():
+    calls = []
+    respx.get(tf.SEARCH_URL).mock(return_value=httpx.Response(200, json=results()))
+    paged = _paged_handler(lambda p: 10, calls=calls)
+    respx.post(tf.FETCH_URL).mock(side_effect=lambda req: paged(req) if json.loads(req.content).get("links")
+                                  else httpx.Response(200, json={"results": [], "errors": []}))
+    info = {}
+    run(_discover(cfg={**CFG, "role_pages": [PAGED], "listing_depth": 3, "listing_min_new": 5, "listing_budget": 10, "max_fetch": 0}, info=info))
+    assert info["role_pages_fetched"] == 3 and info["role_jobs"] == 30
+
+
+# ------------------------------------------------------------------------- fetch order + shipped config
+def test_senior_titles_are_fetched_last_but_early_career_ones_stay_first():
+    mk = lambda title, loc="": make_job(title=title, location=loc)                                           # noqa: E731
+    assert tf.fetch_priority(mk("Staff Software Engineer", "Bengaluru, India")) == 3
+    assert tf.fetch_priority(mk("Engineering Manager")) == 3
+    assert tf.fetch_priority(mk("Software Engineer", "Remote – India")) == 0
+    assert tf.fetch_priority(mk("Junior Software Engineer")) == 1
+    assert tf.fetch_priority(mk("Senior Associate Engineer Trainee")) < 3                                    # early-career wording wins over 'senior'
+
+
+def test_shipped_config_listing_pages_are_valid_and_unique():
+    from app import config
+    cfg = json.loads(config.COMPANIES_PATH.read_text())["aggregators"]["tinyfish"]
+    pages = cfg["role_pages"]
+    assert pages and len(pages) == len(set(pages)) and all(tf._ROLE_PAGE_RE.match(u) for u in pages)
+    assert any("ycombinator.com/jobs" in u for u in pages) and any("wellfound.com/role" in u for u in pages)
+    assert cfg["listing_budget"] >= 20 and cfg["listing_depth"] >= 2
