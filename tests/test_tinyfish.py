@@ -1061,3 +1061,369 @@ def test_shipped_config_listing_pages_are_valid_and_unique():
     assert pages and len(pages) == len(set(pages)) and all(tf._ROLE_PAGE_RE.match(u) for u in pages)
     assert any("ycombinator.com/jobs" in u for u in pages) and any("wellfound.com/role" in u for u in pages)
     assert cfg["listing_budget"] >= 20 and cfg["listing_depth"] >= 2
+
+
+# ============================================================================ posting dates: "Reposted: 1 year ago" was never read
+SEEK_URL = "https://wellfound.com/jobs/1638364-full-stack-engineer-flutter"
+SEEK_PAGE = """# Full Stack Engineer (+Flutter)
+
+* ₹8L – ₹18L • No equity
+* |Remote () •
+* |2 years of exp
+* |Full Time
+
+Reposted: 1 year ago
+
+Job Location
+
+Remote Work Policy
+
+In office
+
+Visa Sponsorship
+
+Not Available
+
+Skills
+
+Node.js
+
+Flutter
+
+## About the job
+
+### About Seek
+
+We are building a consumer-first rewards platform with Node.js and Flutter.
+"""
+
+
+def _days_ago(iso):
+    return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 86400
+
+
+def test_a_reposted_label_gives_the_job_its_date():
+    d = tf.parse_detail(SEEK_PAGE, "Full Stack Engineer (+Flutter) at Seek Rewards • Bengaluru")
+    assert d["posted_text"] == "1 year ago" and 360 < _days_ago(d["posted_at"]) < 370
+
+
+@pytest.mark.parametrize("label,days", [
+    ("Posted: 2 weeks ago", 14), ("Reposted: 1 week ago• Recruiter recently active", 7), ("Posted: 3 days ago", 3), ("Reposted: 1 month ago", 30),
+    ("Posted: a year ago", 365), ("Posted: an hour ago", 0.04), ("Posted: yesterday", 1), ("posted 2 weeks ago", 14),
+])
+def test_posting_date_wordings(label, days):
+    d = tf.parse_detail(f"# Dev\n\n* |Remote\n\n{label}\n\nJob Location\n\nPune\n")
+    assert abs(_days_ago(d["posted_at"]) - days) < 0.1 + days * 0.02
+
+
+@pytest.mark.parametrize("text", [
+    "# Dev\n\nWe posted this role on LinkedIn too.\n", "# Dev\n\nPosted by the hiring manager\n", "# Dev\n\nRepost: when we feel like it\n",
+    "# Dev\n\nThe job was reposted: ago\n", "# Dev\n\nNo date at all\n",
+])
+def test_text_that_only_mentions_posting_gives_no_date(text):
+    assert "posted_at" not in tf.parse_detail(text)
+
+
+@pytest.mark.parametrize("text,days", [("a year ago", 365), ("an hour ago", 0.04), ("about 2 months ago", 60), ("over 1 year ago", 365), ("6 days ago", 6)])
+def test_relative_times_with_a_or_an(text, days):
+    assert abs(_days_ago(tf.relative_to_iso(text)) - days) < 0.1 + days * 0.02
+    assert tf.relative_to_iso("sometime") is None
+
+
+@respx.mock
+def test_a_year_old_reposted_job_is_dropped_as_stale_instead_of_looking_new():
+    fresh_url = "https://wellfound.com/jobs/5-full-stack-developer"
+    fresh_page = SEEK_PAGE.replace("Reposted: 1 year ago", "Reposted: 3 days ago").replace("Remote ()", "Remote ( Everywhere )")
+    _mock_search((SEEK_URL, "Full Stack Engineer (+Flutter) at Seek Rewards • Bengaluru"), (fresh_url, "Full Stack Developer at Newco • Pune"))
+    _mock_fetch({SEEK_URL: SEEK_PAGE, fresh_url: fresh_page})
+    info = {}
+    jobs = run(_discover(info=info))
+    assert [j.url for j in jobs] == [fresh_url] and info["stale"] == 1
+    assert 2.5 < _days_ago(jobs[0].posted_at) < 3.5                                           # and the date is kept, so it can be shown and filtered
+
+
+# ------------------------------------------------------------------------------------- YC listing cards carry an age too
+YC_AGED = """## Jobs
+
+* Vahan (S19)AI recruiter for India's blue-collar workforce
+
+  Vahan (S19)•AI recruiter for India's blue-collar workforce(25 days ago)Lead AI Engineer
+
+  Full-time
+
+  •
+
+  Engineering
+
+  •
+
+  Bengaluru, KA, IN
+
+  Apply
+* LiteLLM (W23)Call every LLM API
+
+  LiteLLM (W23)•Call every LLM API(about 2 months ago)Forward Deployed Engineer - India
+
+  Full-time
+
+  •
+
+  Engineering
+
+  •
+
+  Remote (India)
+
+  Apply
+* OldCo (S20)Ancient things
+
+  OldCo (S20)•Ancient things(over 1 year ago)Software Engineer
+
+  Full-time
+
+  •
+
+  Engineering
+
+  •
+
+  Bengaluru, KA, IN
+
+  Apply
+"""
+YC_AGED_LINKS = ["https://www.ycombinator.com/companies/vahan/jobs/7zvIddz-lead-ai-engineer",
+                 "https://www.ycombinator.com/companies/litellm/jobs/AbCdEfG-forward-deployed-engineer-india",
+                 "https://www.ycombinator.com/companies/oldco/jobs/Zz9Yy8X-software-engineer"]
+
+
+def test_yc_cards_give_each_job_its_age_when_company_and_title_match():
+    by = {j.url.rsplit("/", 1)[-1].split("-")[0]: j for j in tf.job_links_from_page({"text": YC_AGED, "links": YC_AGED_LINKS})}
+    assert 24 < _days_ago(by["7zvIddz"].posted_at) < 26 and 55 < _days_ago(by["AbCdEfG"].posted_at) < 65 and _days_ago(by["Zz9Yy8X"].posted_at) > 360
+    assert tf.job_links_from_page({"text": "no cards", "links": YC_AGED_LINKS[:1]})[0].posted_at is None
+
+
+@respx.mock
+def test_a_yc_card_that_says_a_year_ago_is_not_fetched():
+    respx.get(tf.SEARCH_URL).mock(return_value=httpx.Response(200, json=results()))
+    fetched = []
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body.get("links"):
+            return httpx.Response(200, json={"results": [{"url": YC_LISTING_URL, "text": YC_AGED, "links": YC_AGED_LINKS}], "errors": []})
+        fetched.extend(body["urls"])
+        return httpx.Response(200, json={"results": [{"url": u, "text": YC_V2_PAGE, "title": "Lead AI Engineer at Vahan | Y Combinator"} for u in body["urls"]], "errors": []})
+
+    respx.post(tf.FETCH_URL).mock(side_effect=handler)
+    info = {}
+    jobs = run(_discover(cfg={**CFG, "role_pages": [YC_LISTING_URL]}, info=info))
+    assert YC_AGED_LINKS[2] not in fetched and info["listing_stale"] == 1                      # the year-old card cost no fetch
+    assert {j.url for j in jobs} <= set(YC_AGED_LINKS[:2])
+    assert all(j.posted_at for j in jobs)                                                      # the card's age is kept on the stored job
+
+
+# ------------------------------------------------------------------------------------- backfilling jobs stored without a date
+from app.pipeline import backfill_dates  # noqa: E402
+
+
+def _undated_store(store, n=5):
+    jobs = [make_job(source="wellfound", external_id=str(i), title=f"Dev {i}", company=f"Co{i}", url=f"https://wellfound.com/jobs/{i}-dev", posted_at=None)
+            for i in range(n)]
+    store.upsert_jobs(jobs)
+    return [j.url for j in jobs]
+
+
+def _fetch_mock(pages, errors=None):
+    def handler(request):
+        urls = json.loads(request.content)["urls"]
+        return httpx.Response(200, json={"results": [{"url": u, "text": pages[u]} for u in urls if u in pages],
+                                         "errors": [{"url": u, "error": (errors or {}).get(u, "bot_blocked")} for u in urls if u not in pages]})
+    return respx.post(tf.FETCH_URL).mock(side_effect=handler)
+
+
+@respx.mock
+def test_backfill_records_dates_closes_dead_pages_and_leaves_the_rest(store):
+    urls = _undated_store(store, 5)
+    pages = {urls[0]: SEEK_PAGE, urls[1]: SEEK_PAGE.replace("Reposted: 1 year ago", "Posted: 2 days ago"),
+             urls[2]: "# Dev\n\nNo date here\n", urls[3]: "# Dev\n\nReposted: 1 week ago\n\nThis position has been filled\n"}
+    _fetch_mock(pages, errors={urls[4]: "page_not_found"})
+    stats = run(backfill_dates(store))
+    assert stats == {"checked": 5, "dated": 2, "old": 1, "gone": 1, "closed_dead": 1, "unreadable": 0, "still_undated": 1}
+    by = {j["url"]: j for j in store.query_jobs(limit=50, statuses=["new"], include_closed=True)["items"]}
+    assert 360 < _days_ago(by[urls[0]]["posted_at"]) < 370 and by[urls[0]]["old"] is True
+    assert 1.5 < _days_ago(by[urls[1]]["posted_at"]) < 2.5
+    assert by[urls[2]]["posted_at"] in (None, "") and by[urls[2]]["closed"] is False         # unknown stays unknown, not "new"
+    assert by[urls[3]]["closed"] is True and by[urls[4]]["closed"] is True                   # filled / removed pages are closed
+
+
+@respx.mock
+def test_backfill_treats_a_blocked_page_as_unreadable_not_gone(store):
+    urls = _undated_store(store, 1)
+    _fetch_mock({}, errors={urls[0]: "bot_blocked"})
+    stats = run(backfill_dates(store))
+    assert stats["unreadable"] == 1 and stats["gone"] == 0
+    assert store.query_jobs(limit=5)["total"] == 1                                            # still open; retried next time
+
+
+@respx.mock
+def test_backfill_never_overwrites_an_existing_date_and_respects_the_limit(store):
+    urls = _undated_store(store, 4)
+    store.set_posted_at(urls[0], "2026-01-01T00:00:00+00:00")
+    assert store.set_posted_at(urls[0], "2026-09-09T00:00:00+00:00") is False
+    seen = []
+
+    def handler(request):
+        us = json.loads(request.content)["urls"]
+        seen.extend(us)
+        return httpx.Response(200, json={"results": [{"url": u, "text": SEEK_PAGE} for u in us], "errors": []})
+
+    respx.post(tf.FETCH_URL).mock(side_effect=handler)
+    stats = run(backfill_dates(store, limit=2))
+    assert stats["checked"] == 2 and len(seen) == 2 and urls[0] not in seen                  # the already-dated job is never re-read
+    assert len(store.undated("wellfound", 50)) == 1                                           # 4 - 1 dated before - 2 done now
+
+
+def test_backfill_needs_the_tinyfish_key(store, monkeypatch):
+    from app import config
+    monkeypatch.setattr(config, "TINYFISH_API_KEY", "")
+    with pytest.raises(RuntimeError, match="TINYFISH_API_KEY"):
+        run(backfill_dates(store))
+
+
+def test_new_in_24h_does_not_count_a_year_old_job_we_only_just_found(store):
+    old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat(timespec="seconds")
+    store.upsert_jobs([make_job(external_id="1", title="Dev 1", company="Brand New", posted_at=None),
+                       make_job(external_id="2", title="Dev 2", company="Year Old", posted_at=old),
+                       make_job(external_id="3", title="Dev 3", company="Fresh Dated",
+                                posted_at=(datetime.now(timezone.utc) - timedelta(days=2)).isoformat(timespec="seconds"))])
+    assert store.stats()["new_last_24h"] == 2                                                 # the undated one (unknown) and the 2-day-old one; not the year-old one
+
+
+# ============================================================================ newest postings first: Wellfound listing cards carry an age
+WF_LISTING = """# Software Engineer Jobs in India
+
+#### Page 1 of 21
+
+## Alpha Co
+
+Actively Hiring
+
+We build things11-50 Employees
+
+* Top 10% of responders
+
+  Alpha Co is in the top 10% of companies in terms of response time to applications
+
+Software EngineerFull-time
+
+Onsite or remote • Bangalore Urban+1
+
+1 year of exp
+
+3 days ago
+
+3 days ago
+
+## Beta Co
+
+Actively Hiring
+
+Backend EngineerFull-time
+
+₹30L – ₹50L
+
+Remote • India
+
+1 day ago
+
+1 day ago
+
+Frontend DeveloperFull-time
+
+In office • Pune
+
+2 hours ago
+
+2 hours ago
+
+## Gamma Co
+
+Actively Hiring
+
+Full Stack Developer Full-time
+
+Remote • India
+
+1 year ago
+
+1 year ago
+"""
+WF_ALPHA, WF_BACKEND, WF_FRONT, WF_GAMMA = (f"https://wellfound.com/jobs/{i}-{s}" for i, s in
+                                            ((1, "software-engineer"), (2, "backend-engineer"), (3, "frontend-developer"), (4, "full-stack-developer")))
+WF_LINKS = [WF_ALPHA, "https://wellfound.com/company/alpha-co", WF_BACKEND, WF_FRONT, WF_GAMMA]
+
+
+def test_wellfound_cards_are_read_in_page_order():
+    cards = tf._wf_cards(WF_LISTING)
+    assert [c["title"] for c in cards] == ["Software Engineer", "Backend Engineer", "Frontend Developer", "Full Stack Developer"]
+    assert [round(_days_ago(c["posted_at"]), 1) for c in cards] == [3.0, 1.0, 0.1, 365.0]
+
+
+def test_listing_jobs_get_their_age_from_the_matching_card():
+    jobs = {j.url: j for j in tf.job_links_from_page({"text": WF_LISTING, "links": WF_LINKS})}
+    assert set(jobs) == {WF_ALPHA, WF_BACKEND, WF_FRONT, WF_GAMMA}                           # the company link is not a job
+    assert [round(_days_ago(jobs[u].posted_at), 1) for u in (WF_ALPHA, WF_BACKEND, WF_FRONT, WF_GAMMA)] == [3.0, 1.0, 0.1, 365.0]
+
+
+def test_ages_are_not_guessed_when_cards_and_links_do_not_line_up():
+    assert tf._wf_ages(WF_LINKS[:1] + WF_LINKS[2:4], WF_LISTING) == {}                       # 3 links, 4 cards: could be any pairing -> none
+    assert tf._wf_ages([], WF_LISTING) == {} and tf._wf_ages(WF_LINKS, "") == {}
+    assert all(j.posted_at is None for j in tf.job_links_from_page({"text": "no cards here", "links": WF_LINKS}))
+
+
+def test_a_pair_whose_titles_disagree_gets_no_age_but_the_others_keep_theirs():
+    links = [WF_ALPHA, WF_BACKEND, WF_FRONT, "https://wellfound.com/jobs/4-secops-engineer-clone"]
+    text = WF_LISTING.replace("Full Stack DeveloperFull-time", "GRC Engineer Cloud ComplianceFull-time").replace("Full Stack Developer Full-time", "GRC Engineer Cloud ComplianceFull-time")
+    ages = tf._wf_ages(links, text)
+    assert set(ages) == {WF_ALPHA, WF_BACKEND, WF_FRONT}                                      # the edited 'clone' listing is skipped, not mis-dated
+
+
+def test_a_page_where_the_order_is_clearly_different_is_ignored_entirely():
+    shuffled = [WF_GAMMA, WF_FRONT, WF_BACKEND, WF_ALPHA]                                    # same jobs, opposite order: every pair contradicts
+    assert tf._wf_ages(shuffled, WF_LISTING) == {}
+
+
+@pytest.mark.parametrize("slug,title,ok", [
+    ("software-engineer", "Software Engineer", True), ("secops-engineer-clone", "SecOps Engineer", True),
+    ("senior-software-engineer", "Software Engineer", False), ("engineer", "Senior Engineering Manager", False),
+    ("backend-engineer", "Frontend Developer", False), ("", "Dev", False),
+])
+def test_title_agreement(slug, title, ok):
+    assert tf._titles_agree(slug, title) is ok
+
+
+def test_newest_postings_are_fetched_first_and_seniors_last():
+    mk = lambda title, days=None, loc="": make_job(title=title, location=loc, posted_at=None if days is None else (datetime.now(timezone.utc) - timedelta(days=days)).isoformat())  # noqa: E731
+    jobs = [mk("Dev old", 50), mk("Dev undated"), mk("Dev 5d", 5), mk("Dev 1d", 1), mk("Senior Dev 0d", 0.1), mk("Dev 20d", 20), mk("Dev 3h", 0.12, "Remote – India")]
+    assert [j.title for j in sorted(jobs, key=tf.fetch_order)] == ["Dev 3h", "Dev 1d", "Dev 5d", "Dev undated", "Dev 20d", "Dev old", "Senior Dev 0d"]
+
+
+@respx.mock
+def test_a_tight_fetch_budget_goes_to_the_newest_postings_and_year_old_ones_cost_nothing():
+    respx.get(tf.SEARCH_URL).mock(return_value=httpx.Response(200, json=results()))
+    fetched = []
+    page = SEEK_PAGE.replace("Reposted: 1 year ago", "Posted: 1 day ago").replace("Remote ()", "Remote ( Everywhere )")
+
+    def handler(request):
+        body = json.loads(request.content)
+        if body.get("links"):
+            return httpx.Response(200, json={"results": [{"url": ROLE_URL, "text": WF_LISTING, "links": WF_LINKS}], "errors": []})
+        fetched.extend(body["urls"])
+        return httpx.Response(200, json={"results": [{"url": u, "text": page} for u in body["urls"]], "errors": []})
+
+    respx.post(tf.FETCH_URL).mock(side_effect=handler)
+    info = {}
+    run(_discover(cfg={**CFG, "role_pages": [ROLE_URL], "max_fetch": 2}, info=info))
+    assert fetched == [WF_FRONT, WF_BACKEND]                                                   # 2 hours, then 1 day; not the 3-day one
+    assert WF_GAMMA not in fetched and info["listing_stale"] == 1                              # the year-old card was dropped before any fetch
+    assert info["new"] == 3 and info["fetched"] == 2

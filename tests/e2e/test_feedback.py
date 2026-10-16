@@ -460,3 +460,14 @@ def test_skill_gaps_buttons_are_big_enough_and_fit_a_phone(fb):
     assert box["height"] >= 30 and box["x"] >= 0 and box["x"] + box["width"] <= 390
     drawer = page.get_by_test_id("gaps-drawer").bounding_box()
     assert drawer["x"] >= 0 and drawer["x"] + drawer["width"] <= 390 + 0.5
+
+
+# ===================================================================================== jobs with no posting date
+def test_a_job_with_no_posting_date_says_found_not_seen_or_posted(fb):
+    page = fb
+    age = card(page, "Undated Co").get_by_test_id("age")
+    expect(age).to_have_text(re.compile(r"^found \d+[mh] ago$"))                                 # "found", so nobody reads it as "posted 1 minute ago"
+    expect(age).to_have_attribute("title", re.compile("shows no date"))
+    card(page, "Undated Co").get_by_test_id("job-title").click()
+    expect(page.get_by_test_id("job-drawer")).to_contain_text("no date on the posting")
+    expect(card(page, "Gap Co 0").get_by_test_id("age")).to_have_text(re.compile(r"^\d+[hd] ago$"))     # a dated job shows a plain age

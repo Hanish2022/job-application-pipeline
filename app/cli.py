@@ -1,14 +1,15 @@
-"""Command line: python -m app.cli {profile,crawl,stats,serve}"""
+"""Command line: python -m app.cli {profile,crawl,refresh,sync-feed,import-feed,backfill-dates,stats,due,serve}"""
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import sys
 from pathlib import Path
 
 from . import config
-from .pipeline import PipelineBusy, ensure_profile, rescore, run_pipeline
+from .pipeline import PipelineBusy, backfill_dates, ensure_profile, rescore, run_pipeline
 from .feed import FeedError, refresh, run_sync
 from .resume import ResumeError
 from .schedule import is_due
@@ -36,6 +37,9 @@ def main(argv: list[str] | None = None) -> int:
     sf.add_argument("--url", default=None, help="override FEED_REPO_URL")
     imp = sub.add_parser("import-feed", help="Import a feed.db file you already have")
     imp.add_argument("file")
+
+    b = sub.add_parser("backfill-dates", help="Re-read stored Wellfound jobs that have no posting date and record it (one TinyFish fetch each)")
+    b.add_argument("--limit", type=int, default=300, help="most jobs to re-read (default 300)")
 
     sub.add_parser("stats", help="Print database statistics")
 
@@ -70,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({k: v for k, v in stats.items() if k != "errors"}, indent=2))
             for e in stats.get("errors", []):
                 print(f"warning: {e}", file=sys.stderr)
+        elif args.cmd == "backfill-dates":
+            print(json.dumps(asyncio.run(backfill_dates(store, limit=args.limit)), indent=2))
         elif args.cmd == "due":
             due, reason = is_due(store.last_ok_finished_at(), at=args.at)
             print(("due: " if due else "not due: ") + reason)
@@ -88,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     except ResumeError as e:
         print(f"resume error: {e}", file=sys.stderr)
+        return 2
+    except RuntimeError as e:                   # e.g. no TINYFISH_API_KEY for backfill-dates
+        print(f"error: {e}", file=sys.stderr)
         return 2
     except ValueError as e:                     # e.g. a bad --at value
         print(f"error: {e}", file=sys.stderr)

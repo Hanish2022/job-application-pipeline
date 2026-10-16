@@ -69,6 +69,7 @@ def seed_feedback(store: Store, port: int) -> None:
         Job("greenhouse", "fb5", "Backend Developer (0-2 years)", "Django Shop", link(5), "Bengaluru, India", False, fs + " Django Flask", iso(1), board="django"),
         Job("greenhouse", "fb6", "Full Stack Developer (0-2 years)", "Target Co", link(6), "Bengaluru, India", False, fs + " Django", iso(1), board="target"),
     ]
+    jobs.append(Job("greenhouse", "fb20", "Full Stack Developer (0-2 years)", "Undated Co", link(20), "Bengaluru, India", False, fs, None, board="undated"))
     for i in range(3):              # three ordinary jobs that all ask for TypeScript and Docker, which the seeded resume lacks
         jobs.append(Job("greenhouse", f"fb1{i}", "Full Stack Developer (0-2 years)", f"Gap Co {i}", link(10 + i), "Bengaluru, India", False,
                         fs + " TypeScript Docker", iso(1), board=f"gap{i}"))

@@ -374,8 +374,15 @@ LPA-tagged like any other.
 Guards against stale/wrong results: closed-job text, postings older than `max_age_days`, US-work-authorisation-only roles and
 non-engineering titles are dropped; a page that is permanently gone (`page_not_found`) is remembered and never fetched again; a
 temporary failure (`bot_blocked`, timeout) is kept as a **Preview** and retried next run. The per-run fetch budget (`max_fetch`, 100) is
-shared fairly between Wellfound and YC (round-robin); promising candidates (India/remote, junior titles) are opened first and
-senior/staff/lead/manager titles last.
+shared fairly between Wellfound and YC (round-robin). Within the budget the **newest postings are opened first**: each Wellfound
+listing card shows its job's age ("2 hours ago"), and YC's cards sometimes do, so candidates are ordered youngest first and ones
+older than `max_age_days` are dropped without spending a fetch. An age is only used when the listing's cards and links match
+one-to-one and each pair's title agrees, otherwise the job is simply treated as "age unknown". Senior/staff/lead/manager titles go last.
+
+**Posting dates.** Wellfound pages say "Posted: 2 weeks ago" or "Reposted: 1 year ago"; both are read, and anything older than
+`max_age_days` (90) is dropped at crawl time. YC job pages carry no date, so the age printed on YC's listing cards is used when there
+is one. A job with no date at all is shown as "found 5m ago" (when Foothold found it, not when it was posted) and never counts as
+"New in 24h" if it has a date that says it is old. Jobs saved before dates were read correctly can be repaired once with `backfill-dates`.
 
 **Why a job can be missing, honestly.** Both sites list far more jobs than one run opens. The first runs find ~1,000 new
 candidates and open ~100 per run, so the backlog drains over several days (each run is cheap once pages are known). If a job you
@@ -412,6 +419,7 @@ stops the run.
 .venv/bin/python -m app.cli refresh                     # what cron and the Refresh button run: GitHub feed if FEED_REPO_URL is set, else crawl
 .venv/bin/python -m app.cli sync-feed                   # fetch + import the GitHub feed
 .venv/bin/python -m app.cli import-feed path/feed.db    # import a feed file you already have
+.venv/bin/python -m app.cli backfill-dates --limit 300  # give stored Wellfound jobs the posting date they lack (1 TinyFish fetch each)
 .venv/bin/python -m app.cli profile --resume cv.pdf     # (re)build profile from a resume
 .venv/bin/python -m app.cli due --at 08:30              # exit 0 if a scheduled crawl is due (used by cron)
 .venv/bin/python -m app.cli stats                       # database summary

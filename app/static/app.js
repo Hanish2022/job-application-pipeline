@@ -381,8 +381,8 @@ function ageEl(job) {
   const iso = job.posted_at || job.first_seen, txt = timeAgo(iso);
   if (!txt) return null;
   return el("span", { class: `age${job.old ? " age--old" : ""}`, "data-testid": "age",
-    title: job.posted_at ? `Posted ${job.posted_at.slice(0, 10)}` : "The posting has no date; this is when we first saw it",
-    text: job.posted_at ? txt : `seen ${txt}` });
+    title: job.posted_at ? `Posted ${job.posted_at.slice(0, 10)}` : "This posting shows no date. That is when Foothold first found it, not when it was posted.",
+    text: job.posted_at ? txt : `found ${txt}` });
 }
 
 function renderJob(job) {
@@ -651,7 +651,7 @@ async function openJob(id, { keepFocus = false } = {}) {
     const lc = LEVEL_COLOR[job.level] || "gray";
     row("Level", el("span", { class: `tag c-${lc}` }, el("i", { class: `dot c-${lc}`, "aria-hidden": "true" }), LEVEL_LABEL[job.level] || job.level));
     row("Location", job.location + (job.remote ? " · remote-eligible" : ""));
-    row("Posted", job.posted_at ? `${timeAgo(job.posted_at)} (${job.posted_at.slice(0, 10)})` : `first seen ${timeAgo(job.first_seen)}`);
+    row("Posted", job.posted_at ? `${timeAgo(job.posted_at)} (${job.posted_at.slice(0, 10)})` : `no date on the posting (Foothold found it ${timeAgo(job.first_seen)})`);
     row("Team", job.department);
     row("Type", job.employment_type);
     row("Salary", job.salary_lpa ? `${job.salary_lpa}${job.salary_converted ? `  (listed as ${job.salary}; converted at approximate rates)` : ""}` : "Not listed");

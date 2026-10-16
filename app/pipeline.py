@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -59,6 +59,49 @@ def ensure_profile(store: Store, resume: str | Path | None = None, force: bool =
         profile = profile_from_file(path)
         store.save_profile(profile)
     return profile
+
+
+async def backfill_dates(store: Store, limit: int = 300, client: Optional[httpx.AsyncClient] = None, source: str = "wellfound") -> dict:
+    """Give already-stored jobs the posting date they were saved without (older versions missed "Reposted: 1 year ago").
+    Re-reads each undated posting once; a page that no longer exists closes the job.  Costs one TinyFish fetch per job."""
+    stats = {"checked": 0, "dated": 0, "old": 0, "gone": 0, "closed_dead": 0, "unreadable": 0, "still_undated": 0}
+    if not tinyfish.enabled():
+        raise RuntimeError("TINYFISH_API_KEY is not set")
+    rows = store.undated(source, limit)
+    own = client is None
+    client = client or make_client()
+    old_before = datetime.now(timezone.utc) - timedelta(days=60)
+    try:
+        for i in range(0, len(rows), 10):
+            urls = [u for _, u in rows[i:i + 10]]
+            try:
+                ok, errs = await tinyfish.fetch_details(client, urls)
+            except Exception as e:  # noqa: BLE001 - a failed batch must not lose the batches already done
+                stats["unreadable"] += len(urls)
+                log.warning("backfill batch failed: %s", e)
+                continue
+            for u in urls:
+                stats["checked"] += 1
+                d = ok.get(u)
+                if d is None:
+                    if tinyfish.GONE.search(errs.get(u, "")) and store.close_url(u):
+                        stats["gone"] += 1
+                    else:
+                        stats["unreadable"] += 1
+                    continue
+                if d.get("dead") and store.close_url(u):
+                    stats["closed_dead"] += 1
+                elif d.get("posted_at"):
+                    if store.set_posted_at(u, d["posted_at"]):
+                        stats["dated"] += 1
+                        if datetime.fromisoformat(d["posted_at"]) < old_before:
+                            stats["old"] += 1
+                else:
+                    stats["still_undated"] += 1
+    finally:
+        if own:
+            await client.aclose()
+    return stats
 
 
 def rescore(store: Store, profile: dict) -> int:

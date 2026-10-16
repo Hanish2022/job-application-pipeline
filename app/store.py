@@ -332,6 +332,22 @@ class Store:
                 ).rowcount
         return n
 
+    def undated(self, source: str, limit: int = 300) -> list[tuple[int, str]]:
+        """(id, url) of open jobs from `source` that have no posting date (newest first)."""
+        with self.conn() as c:
+            rows = c.execute("SELECT id, url FROM jobs WHERE source=? AND closed=0 AND (posted_at IS NULL OR posted_at='') ORDER BY id DESC LIMIT ?",
+                             (source, int(limit))).fetchall()
+        return [(r["id"], r["url"]) for r in rows]
+
+    def set_posted_at(self, url: str, iso: str) -> bool:
+        """Record a posting date for a job that had none (never overwrites a date we already have)."""
+        with self.conn() as c:
+            return c.execute("UPDATE jobs SET posted_at=? WHERE url=? AND (posted_at IS NULL OR posted_at='')", (iso, url)).rowcount > 0
+
+    def close_url(self, url: str) -> bool:
+        with self.conn() as c:
+            return c.execute("UPDATE jobs SET closed=1 WHERE url=? AND closed=0", (url,)).rowcount > 0
+
     def close_unseen(self, sources: list[str], older_than_days: int) -> int:
         """Close search-discovered jobs not seen for N days (they vanished from results => likely filled)."""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat(timespec="seconds")
@@ -575,9 +591,10 @@ class Store:
                 "SELECT source, COUNT(*) n FROM jobs WHERE closed=0 GROUP BY source")}
             with_salary = c.execute("SELECT COUNT(*) FROM jobs WHERE closed=0 AND salary_max_lpa IS NOT NULL").fetchone()[0]
             strong = c.execute(f"SELECT COUNT(*) FROM jobs WHERE {active} AND score>=60", hide_args).fetchone()[0]
+            # "New" = first found in the last 24 h AND not an old posting we only just noticed (a year-old job is not news)
             new_today = c.execute(
-                "SELECT COUNT(*) FROM jobs WHERE closed=0 AND first_seen >= ?",
-                ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds"),),
+                "SELECT COUNT(*) FROM jobs WHERE closed=0 AND first_seen >= ? AND COALESCE(NULLIF(posted_at,''), first_seen) >= ?",
+                ((datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds"), _shift(now_iso(), -MAX_AGE_DAYS)),
             ).fetchone()[0]
             buckets = {}
             for token, _label in SALARY_BUCKETS:        # counts across the jobs you still have to act on (the Active tab)

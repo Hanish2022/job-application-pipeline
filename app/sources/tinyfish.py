@@ -61,7 +61,7 @@ _PAY_HEADER = re.compile(
 _JOBTYPE = r"(?:Full[- ]?time|Part[- ]?time|Contract|Internship|Intern\b)"
 _YC_COMPACT = re.compile(rf"^(?P<loc>[^#\n]{{2,300}}?)(?P<type>{_JOBTYPE})(?P<rest>[^\n]*)$", re.I | re.M)
 _YC_EXP = re.compile(r"(\d+\+?\s*(?:[-–]\s*\d+\s*)?years?|Any\s*\(new grads ok\)|New grads? ok)", re.I)
-_REL_TIME = re.compile(r"(\d+)\s*(minute|hour|day|week|month|year)s?\s+ago", re.I)
+_REL_TIME = re.compile(r"(\d+|an?)\s*(minute|hour|day|week|month|year)s?\s+ago", re.I)
 _UNIT_DAYS = {"minute": 1 / 1440, "hour": 1 / 24, "day": 1, "week": 7, "month": 30, "year": 365}
 
 
@@ -138,9 +138,12 @@ def _alnum(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", (text or "").lower())
 
 
-def _yc_listing_entries(text: str) -> list[tuple[str, str, str]]:
-    """YC listing page -> [(company+tagline, 'company•tagline+title', location)], one per job card.
-    A card is a '* ' bullet that ends with 'Apply'; its LAST detail line is the location."""
+_CARD_AGE = re.compile(r"\((?:about |over |almost |less than )?((?:\d+|an?)\s*(?:minute|hour|day|week|month|year)s?\s+ago)\)", re.I)
+
+
+def _yc_listing_entries(text: str) -> list[tuple[str, str, str, Optional[str]]]:
+    """YC listing page -> [(company+tagline, 'company•tagline+title', location, posted_iso_or_None)], one per job card.
+    A card is a '* ' bullet that ends with 'Apply'; its LAST detail line is the location; "(25 days ago)" after the tagline is its age."""
     out = []
     for block in re.split(r"(?m)^\* ", text or "")[1:]:
         lines = [l.strip() for l in block.splitlines() if l.strip()]
@@ -148,19 +151,83 @@ def _yc_listing_entries(text: str) -> list[tuple[str, str, str]]:
             continue
         body = [l for l in lines[:-1] if l != "•"]
         if len(body) >= 3:
-            out.append((_alnum(body[0]), _alnum(body[1]), body[-1]))
+            age = _CARD_AGE.search(body[1])
+            out.append((_alnum(body[0]), _alnum(_CARD_AGE.sub("", body[1])), body[-1], relative_to_iso(age.group(1)) if age else None))
     return out
+
+
+_WF_TYPE = r"(?:Full[- ]?time|Part[- ]?time|Contract|Internship|Temporary|Freelance)"
+_WF_TITLE_LINE = re.compile(rf"^(?P<title>.+?)\s*{_WF_TYPE}\s*$", re.I)
+_WF_AGE_LINE = re.compile(r"^(?:(?:\d+|an?)\s*(?:minute|hour|day|week|month|year)s?\s+ago|today|yesterday|just now)$", re.I)
+
+
+def _wf_cards(text: str) -> list[dict]:
+    """Wellfound listing text -> one {"title", "posted_at"} per job entry, in page order.
+    An entry is 'Title<Full-time>', location/pay/experience lines, then its age printed twice ('3 days ago', '3 days ago');
+    the title is the closest 'Title<type>' line above that age (never crossing a '## Company' heading)."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    out, start = [], 0
+    for i, line in enumerate(lines):
+        if _WF_AGE_LINE.match(line) and (i == 0 or not _WF_AGE_LINE.match(lines[i - 1])):
+            title = None
+            for above in reversed(lines[start:i]):
+                if above.startswith("## "):
+                    break
+                m = _WF_TITLE_LINE.match(above)
+                if m and not above.startswith(("*", "#")):
+                    title = m.group("title").strip()
+                    break
+            out.append({"title": title, "posted_at": relative_to_iso(line)})
+            start = i + 1
+    return out
+
+
+def _titles_agree(slug: str, title: str) -> bool:
+    """Does a job URL's title slug plausibly belong to this card title?  Loose on purpose (slugs add suffixes like '-clone'), but the
+    shorter must be most of the longer, so 'Engineer' does not vouch for 'Senior Engineering Manager'."""
+    a, b = _alnum(slug), _alnum(title)
+    if not a or not b:
+        return False
+    short, long_ = sorted((a, b), key=len)
+    return long_.startswith(short) and len(short) >= 0.6 * len(long_)
+
+
+def _wf_ages(links: list[str], text: str) -> dict[str, str]:
+    """{job url: posted_at} for the Wellfound links on a listing page whose card we can match with confidence.
+    Safe by construction: nothing is paired unless there is exactly one card per job link, each pair is checked by title, and a page
+    where many pairs contradict is ignored altogether (the cards and links are then not in the same order)."""
+    cards = _wf_cards(text)
+    if not links or len(cards) != len(links):
+        return {}
+    ages, contradictions = {}, 0
+    for url, card in zip(links, cards):
+        if card["title"] is None or not card["posted_at"]:
+            continue                                                  # nothing to check it against: leave it undated
+        slug = re.sub(r"^\d+-", "", url.rsplit("/", 1)[-1])
+        if _titles_agree(slug, card["title"]):
+            ages[url] = card["posted_at"]
+        else:
+            contradictions += 1
+    return {} if contradictions >= max(3, len(links) / 4) else ages          # one odd 'clone' listing is fine; many contradictions = wrong order
 
 
 def job_links_from_page(result: dict) -> list[Job]:
     """Preview Jobs for every individual Wellfound/YC posting linked from a fetched listing page.
     The title comes from the URL slug (the fetched posting later replaces it). For YC the card's location is attached too, but
     only when exactly one card matches the link's company AND title - anything less certain is left for the posting to say."""
-    links = set(result.get("links") or [])
-    links |= set(re.findall(r"\((https?://[^)\s]+)\)", result.get("text") or ""))
+    ordered: list[str] = []                                           # page order matters: the cards below are matched to links by position
+    for link in [*(result.get("links") or []), *re.findall(r"\((https?://[^)\s]+)\)", result.get("text") or "")]:
+        if link not in ordered:
+            ordered.append(link)
     cards = _yc_listing_entries(result.get("text") or "")
+    wf_urls: list[str] = []
+    for link in ordered:
+        ident = identify(link)
+        if ident and ident[0] == "wellfound" and ident[2] not in wf_urls:
+            wf_urls.append(ident[2])
+    wf_ages = _wf_ages(wf_urls, result.get("text") or "")
     out: dict[str, Job] = {}
-    for link in sorted(links):
+    for link in ordered:
         ident = identify(link)
         if not ident:
             continue
@@ -170,7 +237,7 @@ def job_links_from_page(result: dict) -> list[Job]:
         title = slug.replace("-", " ").strip().title()
         if not title or title.isdigit() or url in out:        # old-style YC links (workatastartup.com/jobs/<id>) carry no title: nothing to judge them by
             continue
-        company, location = "Unknown", ""
+        company, location, posted = "Unknown", "", wf_ages.get(url)
         if source == "yc" and "/companies/" in url:
             co_slug = url.split("/companies/")[1].split("/")[0]
             company = co_slug.replace("-", " ").title()
@@ -178,8 +245,10 @@ def job_links_from_page(result: dict) -> list[Job]:
             hits = [c for c in cards if want_co and want_co in c[0] and c[1].endswith(want_title)]
             if len(hits) == 1 and _LOCATIONISH.search(hits[0][2]):
                 location = hits[0][2]
+            if len(hits) == 1:
+                posted = hits[0][3]
         out[url] = Job(source=source, external_id=ext_id, title=title, company=company, url=url, location=location,
-                       board=source, tags=[PREVIEW_TAG, SLUG_TAG])
+                       board=source, tags=[PREVIEW_TAG, SLUG_TAG], posted_at=posted)
     return list(out.values())
 
 
@@ -250,7 +319,8 @@ def relative_to_iso(text: str, now: Optional[datetime] = None) -> Optional[str]:
     m = _REL_TIME.search(low)
     if not m:
         return None
-    days = int(m.group(1)) * _UNIT_DAYS[m.group(2).lower()]
+    count = 1 if m.group(1).lower() in ("a", "an") else int(m.group(1))
+    days = count * _UNIT_DAYS[m.group(2).lower()]
     return (now - timedelta(days=days)).isoformat(timespec="seconds")
 
 
@@ -418,8 +488,10 @@ def parse_detail(text: str, page_title: str = "") -> dict:
     m = re.search(r"(Internship|Full[- ]?time|Part[- ]?time|Contract)", head, re.I)
     if m and not info.get("employment_type"):
         info["employment_type"] = m.group(1)
-    m = re.search(r"Posted:\s*([^•\n]+)", head)
-    if m:
+    # "Posted: 2 weeks ago" or "Reposted: 1 year ago" (a repost keeps the label but not the freshness; it was missed before, which made
+    # year-old jobs look brand new).  Only a line that starts with the word counts, so a sentence in the description cannot match.
+    m = re.search(r"^\s*(?:re)?posted:?\s*([^•\n]+)", head, re.I | re.M)
+    if m and relative_to_iso(m.group(1)):
         info["posted_at"] = relative_to_iso(m.group(1))
         info["posted_text"] = m.group(1).strip()
     m = _PAY_HEADER.search(head)
@@ -522,7 +594,7 @@ async def discover(
     counters = {"queries": len(queries), "found": 0, "new": 0, "fetched": 0, "dead": 0, "stale": 0,
                 "us_only": 0, "preview_only": 0, "search_errors": 0, "city_label_ignored": 0,
                 "search_calls": 0, "paging_stopped": 0, "role_pages_ok": 0, "role_pages_fetched": 0, "role_jobs": 0, "gone": 0,
-                "listing_skipped": 0}
+                "listing_skipped": 0, "listing_stale": 0}
 
     found: dict[str, Job] = {}
     min_new = int(cfg.get("page_min_new", 2))       # keep paging a query only while a page still brings this many unseen jobs
@@ -570,8 +642,10 @@ async def discover(
     # A YC listing card states its own location. If that is not somewhere we can work from (e.g. 'Remote (US)'), don't pay to open it.
     usable = [j for j in fresh if not (SLUG_TAG in j.tags and j.source == "yc" and j.location and not relevant(j))]
     counters["listing_skipped"] = len(fresh) - len(usable)
-    fresh = usable
-    fresh.sort(key=fetch_priority)                                   # stable: promising ones first if the fetch cap bites
+    current = [j for j in usable if not (j.posted_at and _age_days(j.posted_at) > max_age_days)]     # a card that says "1 year ago" is not worth a fetch
+    counters["listing_stale"] = len(usable) - len(current)
+    fresh = current
+    fresh.sort(key=fetch_order)                                      # newest postings first; seniors last; promising ones first within an age
     fresh = interleave_by_source(fresh)                              # ...but every source gets its fair share of the cap
     counters["new"] = len(fresh)
     counters["city_label_ignored"] = sum(1 for j in fresh if j.location and not relevant(j))   # would have been dropped before this fix
@@ -604,6 +678,9 @@ async def discover(
                 counters["stale"] += 1
                 continue
             apply_detail(j, d)
+            if j.posted_at and _age_days(j.posted_at) > max_age_days:      # the card's date counts too (YC pages carry none)
+                counters["stale"] += 1
+                continue
             if looks_us_only(j):
                 counters["us_only"] += 1
                 continue
@@ -658,6 +735,18 @@ def fetch_priority(job: Job) -> int:
     if is_india(job.location) or looks_remote(job.location):
         return 0
     return 1 if _EARLY_CAREER.search(title) else 2
+
+
+def fetch_order(job: Job) -> tuple:
+    """Sort key for the per-run fetch budget: NEWEST postings first.
+    (senior?, age band, promise).  Senior/staff/lead roles go last whatever their age (they score too low to matter to a fresher).
+    Age bands: <=6 hours, <=1 day, <=3 days, <=1 week, <=2 weeks, <=1 month, <=2 months, older.  A job whose age we don't know yet sits in
+    the 1-2 week band, so a fresh dated job beats it and an old dated job loses to it.  Within a band the older rule applies
+    (India/remote label, junior title...)."""
+    tier = fetch_priority(job)
+    age = _age_days(job.posted_at) if job.posted_at else None
+    band = 4 if age is None else next(i for i, limit in enumerate((0.25, 1, 3, 7, 14, 30, 60, 1e9)) if age <= limit)
+    return (tier == 3, band, tier)
 
 
 def _age_days(iso: str) -> float:
