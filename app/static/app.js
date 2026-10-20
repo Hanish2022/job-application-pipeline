@@ -377,6 +377,8 @@ function breakdownEl(b) {
 
 function scoreColor(n) { return n >= 80 ? "green" : n >= 60 ? "blue" : n >= 40 ? "yellow" : "gray"; }
 
+function expYears(n) { return n === 0 ? "no experience" : `${n} year${n === 1 ? "" : "s"}`; }
+
 function ageEl(job) {
   const iso = job.posted_at || job.first_seen, txt = timeAgo(iso);
   if (!txt) return null;
@@ -411,6 +413,10 @@ function renderJob(job) {
     job.remote ? el("span", { class: "tag c-blue badge--remote", title: "Can be done remotely from India" }, "Remote") : null,
     job.status === "saved" ? el("span", { class: "tag c-blue badge--saved" }, "Saved") : null,
     applied ? el("span", { class: "tag c-green badge--applied" }, "Applied") : null,
+    job.exp_conflict
+      ? el("span", { class: "tag tag--dashed c-yellow badge--exp", "data-testid": "exp-tag",
+          title: `The posting contradicts itself: its header says ${expYears(job.exp_conflict.header)}, its description asks for ${job.exp_conflict.text}+ years. Check the posting.`, text: "Experience unclear" })
+      : null,
     job.agency ? el("span", { class: "tag c-orange badge--agency", title: job.agency, "data-testid": "agency-tag", text: "Staffing" }) : null,
     job.possibly_closed
       ? el("span", { class: "tag tag--dashed c-yellow badge--closed", title: "Not seen in a crawl for over a week while other jobs were, so it may have been filled", "data-testid": "closed-tag", text: "May be closed" })
@@ -657,6 +663,7 @@ async function openJob(id, { keepFocus = false } = {}) {
     row("Salary", job.salary_lpa ? `${job.salary_lpa}${job.salary_converted ? `  (listed as ${job.salary}; converted at approximate rates)` : ""}` : "Not listed");
     row("Source", SOURCE_LABEL[job.source] || job.source);
     row("Staffing", job.agency);
+    if (job.exp_conflict) row("Experience", `Unclear: the header says ${expYears(job.exp_conflict.header)}, but the description asks for ${job.exp_conflict.text}+ years. Check the posting before you decide.`);
     if (job.old) row("Age", "Posted more than 60 days ago — it may be filled or stale");
     if (job.possibly_closed) row("Status", "Not seen in a crawl for over a week — it may have been filled");
     if (job.status === "dismissed" && job.dismiss_reason) row("Dismissed", REASON_LABEL[job.dismiss_reason] || job.dismiss_reason);

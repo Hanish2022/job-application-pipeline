@@ -12,6 +12,7 @@ from typing import Iterable, Iterator, Optional
 
 from . import agencies, config
 from . import salary as sal
+from .matcher import experience_conflict
 from .models import Job
 from .skills import GENERIC, count_skills
 from .textutil import is_india, norm, remote_eligible
@@ -666,6 +667,8 @@ def _run_to_dict(row: sqlite3.Row) -> dict:
 def _row_to_dict(row: sqlite3.Row, brief: bool = False, flagged_agencies: Optional[set] = None,
                  cutoffs: Optional[tuple[str, str]] = None) -> dict:
     d = dict(row)
+    conflict = experience_conflict(d.get("description") or "") if d.get("level") == "unknown" else None
+    d["exp_conflict"] = {"header": conflict[0], "text": conflict[1]} if conflict else None     # the page contradicts itself about experience
     if cutoffs:
         age_cutoff, seen_cutoff = cutoffs
         d["old"] = (d.get("posted_at") or d["first_seen"]) < age_cutoff            # posted long ago (undated jobs: first seen long ago)

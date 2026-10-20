@@ -323,6 +323,11 @@ halves so scores spread out instead of piling up at 100: *depth* (how many of yo
 - Seniority is inferred from the title (`Intern`, `SDE I`, `Junior`, `Senior`, `(0-2 years)`…), source tags, and
   "N years of experience" in the description. Senior roles are capped at 25, mid-level at 55, non-engineering titles at 20.
 - "Remote" only counts if you can take it from India (`Remote – US only` does not).
+- When a posting **contradicts itself** about experience (the header says "2 years" but the description asks for "3–5 years"), the
+  job is not ranked as mid-level and not as entry-level: its level shows as "not specified", it is not capped at 55, and it carries a
+  yellow *Experience unclear* tag; the details panel spells out both numbers so you can check the posting. This applies only when the
+  title does not settle it ("Senior…", "SDE II", "Junior…" still win) and the text asks for 3–4 years; a text asking for 5+ years
+  is not a near miss and stays senior.
 - Deterministic and explainable; no LLM calls.
 
 ## Salary (LPA)

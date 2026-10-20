@@ -471,3 +471,26 @@ def test_a_job_with_no_posting_date_says_found_not_seen_or_posted(fb):
     card(page, "Undated Co").get_by_test_id("job-title").click()
     expect(page.get_by_test_id("job-drawer")).to_contain_text("no date on the posting")
     expect(card(page, "Gap Co 0").get_by_test_id("age")).to_have_text(re.compile(r"^\d+[hd] ago$"))     # a dated job shows a plain age
+
+
+# ===================================================================================== experience that the posting contradicts itself about
+def test_a_self_contradicting_posting_is_tagged_not_buried_and_explained(fb):
+    page = fb
+    tag = card(page, "Unclear Co").get_by_test_id("exp-tag")
+    expect(tag).to_have_text("Experience unclear")
+    expect(tag).to_have_attribute("title", re.compile(r"header says 2 years, its description asks for 3\+ years"))
+    assert score_of(page, "Unclear Co") >= 60                                              # not capped at the mid-level 55
+    card(page, "Unclear Co").get_by_test_id("job-title").click()
+    drawer = page.get_by_test_id("job-drawer")
+    expect(drawer).to_contain_text("Unclear: the header says 2 years, but the description asks for 3+ years")
+    expect(drawer).to_contain_text("Experience unclear")                                   # also in "why it matches"
+    assert card(page, "Gap Co 0").get_by_test_id("exp-tag").count() == 0                   # ordinary jobs carry no such tag
+
+
+def test_the_unclear_job_is_found_under_not_specified_but_not_under_entry(fb):
+    page = fb
+    page.locator("#f-level").get_by_label("Not specified").check()
+    expect(card(page, "Unclear Co")).to_be_visible()
+    page.locator("#f-level").get_by_label("Not specified").uncheck()
+    page.locator("#f-level").get_by_label("Entry / fresher").check()
+    expect(cards(page, "Unclear Co")).to_have_count(0)

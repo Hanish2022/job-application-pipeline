@@ -196,3 +196,46 @@ def test_skill_scanning_is_fast_enough_that_rescoring_the_whole_list_takes_secon
     for _ in range(300):
         _skills.count_skills(doc)
     assert time.perf_counter() - start < 3.0          # ~0.1 s on a laptop; the old regex scan needed ~8 s for the same work
+
+
+# ------------------------------------------------------------------ a posting that contradicts itself about experience
+from app.matcher import classify_level, experience_conflict  # noqa: E402
+
+KSHM = ("Experience: 2 years of exp.\n\nLocation: Gurugram (On-site)   Type: Full-Time   Experience: 3–5 Years\n\nAbout Kshm\n\nAt Kshm, we're building "
+        "a D2C lifestyle brand. We're looking for a Full Stack Developer who enjoys solving problems, using React, Node.js and MongoDB.")
+
+
+@pytest.mark.parametrize("desc,expected", [
+    (KSHM, (2, 3)),
+    ("Experience: 1 year of exp.\n\nWe need 4 years of experience with Java.", (1, 4)),
+    ("Experience: 2 years of exp.\n\nMinimum 3+ years experience in backend.", (2, 3)),
+    ("No experience required.\n\nYou should have 3 years of experience.", (0, 3)),
+    ("Experience: 2 years of exp.\n\n5+ years of experience required", None),            # 5+ is not a near miss: the text wins (senior)
+    ("Experience: 2 years of exp.\n\nExperience: 2 years preferred", None),                 # no contradiction
+    ("Experience: 3 years of exp.\n\n3-5 years of experience", None),                       # the header itself already says 3+
+    ("Experience: 2 years of exp.\n\nWe love people who ship. Sunny office.", None),        # text asks for nothing
+    ("Experience: 2 years of exp.\n\nWe have been around for 4 years and love coffee.", None),   # years, but not about experience
+    ("Location: Pune\n\nExperience: 3-5 years", None),                                      # no header line
+    ("", None), (None, None),
+])
+def test_experience_conflict(desc, expected):
+    assert experience_conflict(desc) == expected
+
+
+def test_a_self_contradicting_posting_is_not_ranked_as_mid_level():
+    assert classify_level("Full Stack Developer", KSHM) == "unknown"
+    assert classify_level("Full Stack Developer", KSHM.replace("Experience: 2 years of exp.", "Experience: 3 years of exp.")) == "mid"     # no conflict: old rule
+
+
+@pytest.mark.parametrize("title,level", [("Senior Full Stack Developer", "senior"), ("Full Stack Developer II", "mid"), ("Junior Full Stack Developer", "entry"),
+                                         ("Full Stack Developer Intern", "intern")])
+def test_the_title_still_settles_it_when_it_can(title, level):
+    assert classify_level(title, KSHM) == level
+
+
+def test_an_unclear_job_is_shown_uncapped_and_says_why(profile):
+    s = score_job("Full Stack Developer", KSHM, is_india=True, remote=False, profile=profile)
+    assert s.level == "unknown" and s.parts["cap"] is None and s.score > 55
+    assert s.reasons[0].startswith("Matches your skills") and any("Experience unclear: the header says 2 years, the description asks for 3+" in r for r in s.reasons)
+    old = score_job("Full Stack Developer", KSHM.replace("Experience: 2 years of exp.", "Experience: 3 years of exp."), is_india=True, remote=False, profile=profile)
+    assert old.level == "mid" and old.score <= 55 and not any("unclear" in r for r in old.reasons)

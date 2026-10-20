@@ -429,3 +429,17 @@ def test_the_flags_are_shown_even_when_the_hide_rules_are_off_and_on_other_tabs(
     touch(store, "Ancient", first_seen=iso(200))
     store.set_status(jid(store, "Ancient"), "saved")
     assert store.query_jobs(statuses=["saved"])["items"][0]["old"] is True                         # a saved job still tells you it is stale
+
+
+# ====================================================================================== experience_conflict reaches the API
+def test_the_api_flags_a_posting_that_contradicts_itself(store, profile):
+    from tests.test_matcher import KSHM
+    store.save_profile(profile)
+    store.upsert_jobs([make_job(company="Kshm", external_id="k", title="Full Stack Developer", description=KSHM),
+                       make_job(company="Plain", external_id="p", title="Full Stack Developer", description="Experience: 3 years of exp.\n\nReact Node.js")])
+    rescore(store, profile)
+    client = TestClient(create_app(store, crawler=lambda s: {}))
+    by = {j["company"]: j for j in client.get("/api/jobs?min_score=0").json()["items"]}
+    assert by["Kshm"]["exp_conflict"] == {"header": 2, "text": 3} and by["Kshm"]["level"] == "unknown"
+    assert by["Plain"]["exp_conflict"] is None and by["Plain"]["level"] == "mid"
+    assert client.get(f"/api/jobs/{by['Kshm']['id']}").json()["exp_conflict"] == {"header": 2, "text": 3}

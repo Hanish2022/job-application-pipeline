@@ -67,6 +67,26 @@ def _max_required_years(text: str) -> int | None:
     return max(vals) if vals else None
 
 
+# Pages that state experience in a header ("Experience: 2 years of exp." / "No experience required.") put that line first in the description.
+_HEADER_EXP = re.compile(r"^\s*(?:experience:\s*(\d{1,2})\+?\s*years?(?:\s+of\s+exp)?|(no experience required))", re.I)
+
+
+def experience_conflict(description: str) -> tuple[int, int] | None:
+    """(years in the header, years the text asks for) when the posting contradicts itself: the header says 2 years or less
+    but the description asks for 3 or 4.  None when there is no header, no contradiction, the header already says 3+, or the text
+    asks for 5+ (that is not a near miss - the text wins and the job stays senior).
+    The header is a field the recruiter fills in; the text is often copied from another posting, so neither can be trusted
+    alone - which is why such a job is shown as 'experience unclear' instead of being ranked as mid-level or as entry-level."""
+    m = _HEADER_EXP.match(description or "")
+    if not m:
+        return None
+    header = 0 if m.group(2) else int(m.group(1))
+    if header > 2:
+        return None
+    text = _max_required_years((description or "")[m.end():][:6000])
+    return (header, text) if text is not None and 3 <= text <= 4 else None
+
+
 def classify_level(title: str, description: str = "", hint: str = "") -> str:
     """intern | entry | mid | senior | unknown.  `hint` = source-provided seniority tags, if any."""
     t = title or ""
@@ -85,6 +105,8 @@ def classify_level(title: str, description: str = "", hint: str = "") -> str:
     h = (hint or "").lower()
     if re.search(r"\b(entry|junior|intern|graduate)\b", h):
         return "entry"
+    if experience_conflict(description):          # the title does not settle it and the page contradicts itself: say so, don't guess
+        return "unknown"
     desc = (description or "")[:6000]
     years = _max_required_years(desc)
     if years is not None:
@@ -214,6 +236,9 @@ def score_job(
 
     if avoided:
         reasons.insert(0, "Uses technologies you passed on: " + ", ".join(avoided[:4]))
+    conflict = experience_conflict(description) if level == "unknown" else None
+    if conflict:
+        reasons.insert(0, f"Experience unclear: the header says {conflict[0]} year{'s' if conflict[0] != 1 else ''}, the description asks for {conflict[1]}+")
     if matched:
         reasons.insert(0, "Matches your skills: " + ", ".join(matched[:6]))
     parts = {
